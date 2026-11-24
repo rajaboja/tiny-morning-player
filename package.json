@@ -1,0 +1,13 @@
+{
+  "name": "tiny-morning-player",
+  "version": "1.0.0",
+  "description": "My Tiny Morning Show (Bob Boilen) — Spinitron tracklist & Mixcloud timestamp player",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

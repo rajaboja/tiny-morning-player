@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Tiny Morning Show — Track Player</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>My Tiny Morning Show</h1>
+        <span class="subtitle">Bob Boilen &middot; WOWD 94.3 FM &middot; Mixcloud + Spinitron</span>
+      </div>
+      <div class="topbar-actions">
+        <input id="track-search" type="search" placeholder="Filter songs or artists..." autocomplete="off">
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h2>Episodes</h2>
+          <span id="episode-count" class="badge">...</span>
+        </div>
+        <div id="episode-list" class="episode-list">
+          <div class="status">Loading episodes...</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div id="episode-header" class="episode-header hidden">
+          <img id="ep-art" class="ep-art" alt="">
+          <div class="ep-meta">
+            <h2 id="ep-title"></h2>
+            <p id="ep-desc" class="ep-desc"></p>
+            <div class="ep-links">
+              <a id="ep-mixcloud-link" target="_blank" rel="noopener">Mixcloud</a>
+              <a id="ep-spinitron-link" target="_blank" rel="noopener">Spinitron</a>
+              <div class="sync-control" title="Adjust seek offset if recording starts slightly before or after 8:00 AM">
+                <span>Sync:</span>
+                <button type="button" data-nudge="-30">-30s</button>
+                <button type="button" data-nudge="-10">-10s</button>
+                <span id="sync-value">0s</span>
+                <button type="button" data-nudge="10">+10s</button>
+                <button type="button" data-nudge="30">+30s</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tracklist-container" class="tracklist-container">
+          <div class="status">Select an episode to view its tracklist.</div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="player-bar">
+      <div id="player-status" class="player-status">Pick a track to play it in Mixcloud</div>
+      <div id="player-mount" class="player-mount"></div>
+    </footer>
+  </div>
+
+  <script src="https://widget.mixcloud.com/media/js/widgetApi.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
