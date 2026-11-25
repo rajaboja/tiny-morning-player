@@ -1,4 +1,6 @@
 const DEFAULT_TITLE = document.title;
+const SHARE_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
+const CHECK_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
 
 const state = {
   episodes: [],
@@ -181,6 +183,9 @@ function renderTracks() {
           <div class="track-artist">${escapeHtml(t.artist)}</div>
         </td>
         <td class="track-album">${escapeHtml(t.album)}</td>
+        <td class="track-share">
+          <button type="button" class="share-btn" aria-label="Share ${escapeHtml(formatTrackLabel(t))}" title="Share track link">${SHARE_ICON_SVG}</button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -193,6 +198,7 @@ function renderTracks() {
           <th>Time</th>
           <th>Track / Artist</th>
           <th>Album</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -421,7 +427,71 @@ el.playerStatus.addEventListener('click', (e) => {
   playTrack(Number(btn.dataset.playIdx));
 });
 
+async function copyToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(ta);
+  if (!ok) throw new Error('Copy failed');
+}
+
+async function shareTrack(trackIdx, btn) {
+  const track = state.tracks[trackIdx];
+  const ep = state.selectedEpisode;
+  if (!track || !ep) return;
+
+  const url = buildTrackUrl(ep.slug, trackIdx);
+  const label = formatTrackLabel(track);
+  const isTouchDevice = window.matchMedia?.('(pointer: coarse)').matches;
+
+  if (isTouchDevice && typeof navigator.share === 'function') {
+    try {
+      await navigator.share({
+        title: label,
+        text: `${label} — ${ep.name}`,
+        url,
+      });
+      return;
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+    }
+  }
+
+  try {
+    await copyToClipboard(url);
+    if (btn) {
+      clearTimeout(btn._copiedTimer);
+      btn.classList.add('copied');
+      btn.innerHTML = CHECK_ICON_SVG;
+      btn.title = 'Link copied!';
+      btn._copiedTimer = setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = SHARE_ICON_SVG;
+        btn.title = 'Share track link';
+      }, 1800);
+    }
+  } catch (err) {
+    console.error(err);
+    el.playerStatus.textContent = `Could not copy link: ${url}`;
+  }
+}
+
 el.tracklistContainer.addEventListener('click', (e) => {
+  const shareBtn = e.target.closest('.share-btn');
+  if (shareBtn) {
+    const row = shareBtn.closest('.track-row');
+    if (row) shareTrack(Number(row.dataset.idx), shareBtn);
+    return;
+  }
   const row = e.target.closest('.track-row');
   if (!row) return;
   playTrack(Number(row.dataset.idx));
