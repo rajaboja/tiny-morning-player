@@ -153,19 +153,16 @@ function updateActiveTrackFromProgress(positionSeconds) {
   }
 }
 
-async function ensureWidgetForEpisode(mixcloudKey, seekSeconds) {
-  const target = Math.max(0, Math.floor(seekSeconds));
-
+async function mountWidget(mixcloudKey, autoplay = false) {
   if (!state.widget) {
     const iframe = document.createElement('iframe');
     iframe.allow = 'autoplay; encrypted-media';
-    iframe.src = `https://player-widget.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&autoplay=1&feed=${encodeURIComponent(mixcloudKey)}`;
+    iframe.src = `https://player-widget.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&autoplay=${autoplay ? 1 : 0}&feed=${encodeURIComponent(mixcloudKey)}`;
     el.playerMount.innerHTML = '';
     el.playerMount.appendChild(iframe);
 
     state.loadedMixcloudKey = mixcloudKey;
     state.widgetReady = false;
-    state.pendingSeekSeconds = target;
 
     const widget = window.Mixcloud.PlayerWidget(iframe);
     state.widget = widget;
@@ -177,31 +174,31 @@ async function ensureWidgetForEpisode(mixcloudKey, seekSeconds) {
       if (state.pendingSeekSeconds !== null && position > 0) {
         const toSeek = state.pendingSeekSeconds;
         state.pendingSeekSeconds = null;
-        widget.seek(toSeek);
+        if (Math.abs(position - toSeek) > 3) {
+          widget.seek(toSeek);
+        }
       }
       updateActiveTrackFromProgress(position);
     });
-
-    await widget.play();
-    if (target > 0) {
-      await widget.seek(target);
-    }
     return;
   }
 
   if (state.loadedMixcloudKey !== mixcloudKey) {
     state.loadedMixcloudKey = mixcloudKey;
-    state.pendingSeekSeconds = target;
-    await state.widget.load(mixcloudKey, true);
-    if (target > 0) {
-      await state.widget.seek(target);
-    }
-    return;
+    await state.widget.ready;
+    await state.widget.load(mixcloudKey, autoplay);
   }
+}
 
-  state.pendingSeekSeconds = null;
+async function ensureWidgetForEpisode(mixcloudKey, seekSeconds) {
+  const target = Math.max(0, Math.floor(seekSeconds));
+  state.pendingSeekSeconds = target;
+
+  await mountWidget(mixcloudKey, true);
   await state.widget.play();
-  await state.widget.seek(target);
+  if (target > 0) {
+    await state.widget.seek(target);
+  }
 }
 
 async function playTrack(trackIdx) {
@@ -227,6 +224,8 @@ async function selectEpisode(ep) {
   state.tracks = [];
   state.activeTrackIndex = -1;
   renderEpisodes();
+
+  mountWidget(ep.mixcloudKey, false).catch(() => {});
 
   el.episodeHeader.classList.remove('hidden');
   el.epArt.src = ep.picture || '';
