@@ -1,6 +1,18 @@
 services:
   - type: web
     name: tiny-morning-player
+    branch: main
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+
+  - type: web
+    name: tiny-morning-player-dev
+    branch: dev
     runtime: node
     plan: free
     buildCommand: ""
