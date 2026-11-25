@@ -56,6 +56,14 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function formatEpisodeLength(seconds) {
+  if (!seconds) return '';
+  const mins = Math.round(seconds / 60);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
 function renderEpisodes() {
   el.episodeCount.textContent = String(state.episodes.length);
   if (!state.episodes.length) {
@@ -65,9 +73,8 @@ function renderEpisodes() {
 
   el.episodeList.innerHTML = state.episodes.map((ep, idx) => {
     const isActive = state.selectedEpisode?.mixcloudKey === ep.mixcloudKey;
-    const tag = ep.spinitronId
-      ? '<span class="episode-tag">Tracklist</span>'
-      : '<span class="episode-tag missing">No list</span>';
+    const dur = formatEpisodeLength(ep.audioLength);
+    const tag = dur ? `<span class="episode-tag">${escapeHtml(dur)}</span>` : '';
     return `
       <button type="button" class="episode-item ${isActive ? 'active' : ''}" data-idx="${idx}">
         ${ep.picture ? `<img src="${escapeHtml(ep.picture)}" alt="" loading="lazy">` : ''}
@@ -109,7 +116,7 @@ function renderTracks() {
         </td>
         <td class="track-offset">
           <div>${formatDuration(effectiveOffset)}</div>
-          <div class="track-clock">${escapeHtml(t.time)}</div>
+          ${t.time ? `<div class="track-clock">${escapeHtml(t.time)}</div>` : ''}
         </td>
         <td class="track-info">
           <div class="track-song">${escapeHtml(t.song)}</div>
@@ -233,35 +240,42 @@ async function selectEpisode(ep) {
   el.epDesc.textContent = '';
   el.epMixcloudLink.href = ep.mixcloudUrl;
 
-  if (!ep.spinitronId) {
+  if (ep.spinitronUrl) {
+    el.epSpinitronLink.style.display = '';
+    el.epSpinitronLink.href = ep.spinitronUrl;
+  } else {
     el.epSpinitronLink.style.display = 'none';
-    el.tracklistContainer.innerHTML = `
-      <div class="status">
-        No matching Spinitron tracklist found for ${escapeHtml(ep.date || 'this episode')}.
-        <br><br>
-        <button type="button" id="play-full-ep" class="play-btn" style="width:auto;padding:6px 14px;border-radius:6px;">
-          Play full episode on Mixcloud
-        </button>
-      </div>
-    `;
-    document.getElementById('play-full-ep')?.addEventListener('click', () => {
-      ensureWidgetForEpisode(ep.mixcloudKey, 0);
-    });
-    return;
   }
 
-  el.epSpinitronLink.style.display = '';
-  el.epSpinitronLink.href = ep.spinitronUrl;
-  el.tracklistContainer.innerHTML = '<div class="status">Loading tracklist from Spinitron...</div>';
+  el.tracklistContainer.innerHTML = '<div class="status">Loading tracklist...</div>';
 
   try {
-    const res = await fetch(`/api/tracks/${ep.spinitronId}`);
+    const query = ep.spinitronId ? `?spinitronId=${encodeURIComponent(ep.spinitronId)}` : '';
+    const res = await fetch(`/api/episodes/${encodeURIComponent(ep.slug)}/tracks${query}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (state.selectedEpisode?.mixcloudKey !== ep.mixcloudKey) return;
+
     el.epDesc.textContent = data.description || '';
     state.tracks = data.tracks || [];
+    if (!state.tracks.length) {
+      el.tracklistContainer.innerHTML = `
+        <div class="status">
+          No tracklist available for ${escapeHtml(ep.date || 'this episode')}.
+          <br><br>
+          <button type="button" id="play-full-ep" class="play-btn" style="width:auto;padding:6px 14px;border-radius:6px;">
+            Play full episode on Mixcloud
+          </button>
+        </div>
+      `;
+      document.getElementById('play-full-ep')?.addEventListener('click', () => {
+        ensureWidgetForEpisode(ep.mixcloudKey, 0);
+      });
+      return;
+    }
     renderTracks();
   } catch (err) {
+    if (state.selectedEpisode?.mixcloudKey !== ep.mixcloudKey) return;
     el.tracklistContainer.innerHTML = `<div class="status">Failed to load tracklist: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -313,9 +327,8 @@ async function init() {
     const data = await res.json();
     state.episodes = data.episodes || [];
     renderEpisodes();
-    const firstMatched = state.episodes.find((ep) => ep.spinitronId) || state.episodes[0];
-    if (firstMatched) {
-      selectEpisode(firstMatched);
+    if (state.episodes[0]) {
+      selectEpisode(state.episodes[0]);
     }
   } catch (err) {
     el.episodeList.innerHTML = `<div class="status">Failed to load episodes: ${escapeHtml(err.message)}</div>`;
