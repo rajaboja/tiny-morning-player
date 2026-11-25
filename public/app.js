@@ -104,14 +104,14 @@ function renderTracks() {
     const isPlaying = state.activeTrackIndex === t._idx;
     return `
       <tr class="track-row ${isPlaying ? 'playing' : ''}" data-idx="${t._idx}">
-        <td style="width: 48px;">
+        <td class="track-play">
           <button type="button" class="play-btn" aria-label="Play ${escapeHtml(t.song)}">&#9654;</button>
         </td>
-        <td class="track-offset" style="width: 90px;">
+        <td class="track-offset">
           <div>${formatDuration(effectiveOffset)}</div>
-          <div style="font-size: 11px;">${escapeHtml(t.time)}</div>
+          <div class="track-clock">${escapeHtml(t.time)}</div>
         </td>
-        <td>
+        <td class="track-info">
           <div class="track-song">${escapeHtml(t.song)}</div>
           <div class="track-artist">${escapeHtml(t.artist)}</div>
         </td>
