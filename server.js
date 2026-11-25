@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getEpisodes, getTracklist } from './lib/sources.js';
+import { getEpisodes, getEpisodeTracks, getTracklist } from './lib/sources.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -59,6 +59,13 @@ const server = http.createServer(async (req, res) => {
       const refresh = url.searchParams.get('refresh') === '1';
       const episodes = await getEpisodes(refresh);
       return sendJson(res, 200, { episodes });
+    }
+
+    const episodeTracksMatch = pathname.match(/^\/api\/episodes\/([a-z0-9-]+)\/tracks$/i);
+    if (req.method === 'GET' && episodeTracksMatch) {
+      const spinitronId = url.searchParams.get('spinitronId');
+      const data = await getEpisodeTracks(episodeTracksMatch[1], spinitronId);
+      return sendJson(res, 200, data);
     }
 
     const trackMatch = pathname.match(/^\/api\/tracks\/(\d+)$/);
