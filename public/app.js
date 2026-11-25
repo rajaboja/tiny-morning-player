@@ -8,6 +8,7 @@ const state = {
   widget: null,
   widgetReady: false,
   pendingSeekSeconds: null,
+  lastPositionSeconds: 0,
   activeTrackIndex: -1,
 };
 
@@ -178,6 +179,7 @@ async function mountWidget(mixcloudKey, autoplay = false) {
     state.widgetReady = true;
 
     widget.events.progress.on((position) => {
+      state.lastPositionSeconds = position;
       if (state.pendingSeekSeconds !== null && position > 0) {
         const toSeek = state.pendingSeekSeconds;
         state.pendingSeekSeconds = null;
@@ -192,6 +194,7 @@ async function mountWidget(mixcloudKey, autoplay = false) {
 
   if (state.loadedMixcloudKey !== mixcloudKey) {
     state.loadedMixcloudKey = mixcloudKey;
+    state.lastPositionSeconds = 0;
     await state.widget.ready;
     await state.widget.load(mixcloudKey, autoplay);
   }
@@ -232,7 +235,9 @@ async function selectEpisode(ep) {
   state.activeTrackIndex = -1;
   renderEpisodes();
 
-  mountWidget(ep.mixcloudKey, false).catch(() => {});
+  if (!state.widget) {
+    mountWidget(ep.mixcloudKey, false).catch(() => {});
+  }
 
   el.episodeHeader.classList.remove('hidden');
   el.epArt.src = ep.picture || '';
@@ -274,6 +279,9 @@ async function selectEpisode(ep) {
       return;
     }
     renderTracks();
+    if (state.lastPositionSeconds > 0) {
+      updateActiveTrackFromProgress(state.lastPositionSeconds);
+    }
   } catch (err) {
     if (state.selectedEpisode?.mixcloudKey !== ep.mixcloudKey) return;
     el.tracklistContainer.innerHTML = `<div class="status">Failed to load tracklist: ${escapeHtml(err.message)}</div>`;
