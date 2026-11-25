@@ -1,3 +1,5 @@
+const DEFAULT_TITLE = document.title;
+
 const state = {
   episodes: [],
   selectedEpisode: null,
@@ -10,6 +12,7 @@ const state = {
   pendingSeekSeconds: null,
   lastPositionSeconds: 0,
   activeTrackIndex: -1,
+  sharedTrackIndex: -1,
 };
 
 const el = {
@@ -65,6 +68,59 @@ function formatEpisodeLength(seconds) {
   return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
 }
 
+function formatTrackLabel(track) {
+  if (track.artist && track.song) return `${track.artist} — ${track.song}`;
+  return track.song || track.artist || 'Track';
+}
+
+function parseDeepLink() {
+  const params = new URLSearchParams(window.location.search);
+  const ep = params.get('ep')?.trim() || null;
+  const trackRaw = params.get('track')?.trim() || '';
+  const tRaw = params.get('t')?.trim() || '';
+  const trackNum = /^\d+$/.test(trackRaw) ? Number(trackRaw) : null;
+  const trackIndex = trackNum && trackNum >= 1 ? trackNum - 1 : null;
+  const seconds = /^\d+$/.test(tRaw) ? Number(tRaw) : null;
+  return { ep, trackIndex, seconds };
+}
+
+function buildTrackUrl(epSlug, trackIdx = null) {
+  const url = new URL('/', window.location.origin);
+  if (epSlug) url.searchParams.set('ep', epSlug);
+  if (trackIdx !== null && trackIdx >= 0) {
+    url.searchParams.set('track', String(trackIdx + 1));
+  }
+  return url.toString();
+}
+
+function syncUrl(ep, trackIdx = null) {
+  if (!ep) return;
+  const params = new URLSearchParams();
+  params.set('ep', ep.slug);
+  const track = trackIdx !== null && trackIdx >= 0 ? state.tracks[trackIdx] : null;
+  if (track) {
+    params.set('track', String(trackIdx + 1));
+    document.title = `${formatTrackLabel(track)} · My Tiny Morning Show`;
+  } else {
+    document.title = ep.name ? `${ep.name} · My Tiny Morning Show` : DEFAULT_TITLE;
+  }
+  const nextUrl = `/?${params.toString()}`;
+  if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+    window.history.replaceState(null, '', nextUrl);
+  }
+}
+
+function resolveTrackIndexByTime(seconds) {
+  if (!state.tracks.length) return null;
+  let idx = 0;
+  for (let i = 0; i < state.tracks.length; i++) {
+    const start = Math.max(0, state.tracks[i].offsetSeconds + state.syncOffsetSeconds);
+    if (seconds >= start) idx = i;
+    else break;
+  }
+  return idx;
+}
+
 function renderEpisodes() {
   el.episodeCount.textContent = String(state.episodes.length);
   if (!state.episodes.length) {
@@ -110,8 +166,9 @@ function renderTracks() {
   const rows = filtered.map((t) => {
     const effectiveOffset = Math.max(0, t.offsetSeconds + state.syncOffsetSeconds);
     const isPlaying = state.activeTrackIndex === t._idx;
+    const isShared = state.sharedTrackIndex === t._idx && !isPlaying;
     return `
-      <tr class="track-row ${isPlaying ? 'playing' : ''}" data-idx="${t._idx}">
+      <tr class="track-row ${isPlaying ? 'playing' : ''} ${isShared ? 'shared' : ''}" data-idx="${t._idx}">
         <td class="track-play">
           <button type="button" class="play-btn" aria-label="Play ${escapeHtml(t.song)}">&#9654;</button>
         </td>
@@ -155,8 +212,11 @@ function updateActiveTrackFromProgress(positionSeconds) {
   }
   if (idx !== state.activeTrackIndex) {
     state.activeTrackIndex = idx;
+    state.sharedTrackIndex = -1;
     document.querySelectorAll('.track-row').forEach((row) => {
-      row.classList.toggle('playing', Number(row.dataset.idx) === idx);
+      const rowIdx = Number(row.dataset.idx);
+      row.classList.toggle('playing', rowIdx === idx);
+      row.classList.remove('shared');
     });
   }
 }
@@ -218,9 +278,11 @@ async function playTrack(trackIdx) {
 
   const targetSeconds = Math.max(0, track.offsetSeconds + state.syncOffsetSeconds);
   state.activeTrackIndex = trackIdx;
+  state.sharedTrackIndex = -1;
+  syncUrl(ep, trackIdx);
   renderTracks();
 
-  el.playerStatus.textContent = `Playing: ${track.artist} — ${track.song} (jumping to ${formatDuration(targetSeconds)})`;
+  el.playerStatus.textContent = `Playing: ${formatTrackLabel(track)} (jumping to ${formatDuration(targetSeconds)})`;
   try {
     await ensureWidgetForEpisode(ep.mixcloudKey, targetSeconds);
   } catch (err) {
@@ -229,11 +291,35 @@ async function playTrack(trackIdx) {
   }
 }
 
-async function selectEpisode(ep) {
+function showSharedTrackPrompt(trackIdx) {
+  const track = state.tracks[trackIdx];
+  if (!track) return;
+
+  const targetSeconds = Math.max(0, track.offsetSeconds + state.syncOffsetSeconds);
+  state.sharedTrackIndex = trackIdx;
+  state.pendingSeekSeconds = targetSeconds;
+  renderTracks();
+
+  const row = el.tracklistContainer.querySelector(`.track-row[data-idx="${trackIdx}"]`);
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  el.playerStatus.innerHTML = `
+    <span class="player-status-text">Shared track: <strong>${escapeHtml(formatTrackLabel(track))}</strong> (${formatDuration(targetSeconds)})</span>
+    <button type="button" class="status-play-btn" data-play-idx="${trackIdx}">&#9654; Play track</button>
+  `;
+}
+
+async function selectEpisode(ep, options = {}) {
+  const { deepLink = null, updateUrl = true } = options;
   state.selectedEpisode = ep;
   state.tracks = [];
   state.activeTrackIndex = -1;
+  state.sharedTrackIndex = -1;
   renderEpisodes();
+
+  if (updateUrl && !deepLink) {
+    syncUrl(ep);
+  }
 
   if (!state.widget) {
     mountWidget(ep.mixcloudKey, false).catch(() => {});
@@ -264,6 +350,11 @@ async function selectEpisode(ep) {
     el.epDesc.textContent = data.description || '';
     state.tracks = data.tracks || [];
     if (!state.tracks.length) {
+      const seekAt = deepLink?.seconds || 0;
+      if (deepLink) {
+        syncUrl(ep);
+        if (seekAt > 0) state.pendingSeekSeconds = seekAt;
+      }
       el.tracklistContainer.innerHTML = `
         <div class="status">
           No tracklist available for ${escapeHtml(ep.date || 'this episode')}.
@@ -274,10 +365,26 @@ async function selectEpisode(ep) {
         </div>
       `;
       document.getElementById('play-full-ep')?.addEventListener('click', () => {
-        ensureWidgetForEpisode(ep.mixcloudKey, 0);
+        ensureWidgetForEpisode(ep.mixcloudKey, seekAt);
       });
       return;
     }
+
+    if (deepLink) {
+      let targetIdx = null;
+      if (deepLink.trackIndex !== null && deepLink.trackIndex < state.tracks.length) {
+        targetIdx = deepLink.trackIndex;
+      } else if (deepLink.seconds !== null) {
+        targetIdx = resolveTrackIndexByTime(deepLink.seconds);
+      }
+      if (targetIdx !== null && state.tracks[targetIdx]) {
+        syncUrl(ep, targetIdx);
+        showSharedTrackPrompt(targetIdx);
+        return;
+      }
+      syncUrl(ep);
+    }
+
     renderTracks();
     if (state.lastPositionSeconds > 0) {
       updateActiveTrackFromProgress(state.lastPositionSeconds);
@@ -308,6 +415,12 @@ el.episodeList.addEventListener('click', (e) => {
   }
 });
 
+el.playerStatus.addEventListener('click', (e) => {
+  const btn = e.target.closest('.status-play-btn');
+  if (!btn) return;
+  playTrack(Number(btn.dataset.playIdx));
+});
+
 el.tracklistContainer.addEventListener('click', (e) => {
   const row = e.target.closest('.track-row');
   if (!row) return;
@@ -324,20 +437,43 @@ document.querySelectorAll('.sync-control button').forEach((btn) => {
     state.syncOffsetSeconds += Number(btn.dataset.nudge);
     const sign = state.syncOffsetSeconds > 0 ? '+' : '';
     el.syncValue.textContent = `${sign}${state.syncOffsetSeconds}s`;
+    if (state.sharedTrackIndex >= 0 && state.tracks[state.sharedTrackIndex]) {
+      showSharedTrackPrompt(state.sharedTrackIndex);
+      return;
+    }
     renderTracks();
   });
 });
 
 async function init() {
+  const deepLink = parseDeepLink();
   try {
     const res = await fetch('/api/episodes');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     state.episodes = data.episodes || [];
     renderEpisodes();
-    if (state.episodes[0]) {
-      selectEpisode(state.episodes[0]);
+    if (!state.episodes.length) return;
+
+    const matched = deepLink.ep
+      ? state.episodes.find((ep) => ep.slug === deepLink.ep)
+      : null;
+
+    if (deepLink.ep && !matched) {
+      el.playerStatus.textContent = 'Shared episode not found; showing latest episode.';
+      selectEpisode(state.episodes[0], { updateUrl: false });
+      return;
     }
+
+    if (matched) {
+      const matchedIdx = state.episodes.indexOf(matched);
+      selectEpisode(matched, { deepLink, updateUrl: true });
+      const epBtn = el.episodeList.querySelector(`.episode-item[data-idx="${matchedIdx}"]`);
+      epBtn?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+
+    selectEpisode(state.episodes[0], { updateUrl: false });
   } catch (err) {
     el.episodeList.innerHTML = `<div class="status">Failed to load episodes: ${escapeHtml(err.message)}</div>`;
   }

@@ -333,6 +333,11 @@ html, body {
   background: var(--accent-soft);
 }
 
+.track-row.shared {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .track-row td {
   padding: 10px;
   vertical-align: middle;
@@ -353,7 +358,8 @@ html, body {
 }
 
 .track-row:hover .play-btn,
-.track-row.playing .play-btn {
+.track-row.playing .play-btn,
+.track-row.shared .play-btn {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -402,12 +408,43 @@ html, body {
 }
 
 .player-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.player-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-status-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.status-play-btn {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-play-btn:hover {
+  filter: brightness(1.08);
 }
 
 .player-mount iframe {
