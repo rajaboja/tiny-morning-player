@@ -25,7 +25,17 @@ const el = {
   syncValue: document.getElementById('sync-value'),
   playerStatus: document.getElementById('player-status'),
   playerMount: document.getElementById('player-mount'),
+  sidebar: document.getElementById('sidebar'),
+  drawerBackdrop: document.getElementById('drawer-backdrop'),
+  episodesToggle: document.getElementById('episodes-toggle'),
+  drawerClose: document.getElementById('drawer-close'),
 };
+
+function setDrawerOpen(open) {
+  el.sidebar.classList.toggle('open', open);
+  el.drawerBackdrop.classList.toggle('open', open);
+  el.episodesToggle.setAttribute('aria-expanded', String(open));
+}
 
 function formatDuration(seconds) {
   const s = Math.max(0, Math.floor(seconds));
@@ -257,11 +267,24 @@ async function selectEpisode(ep) {
   }
 }
 
+el.episodesToggle.addEventListener('click', () => {
+  setDrawerOpen(!el.sidebar.classList.contains('open'));
+});
+
+el.drawerClose.addEventListener('click', () => setDrawerOpen(false));
+el.drawerBackdrop.addEventListener('click', () => setDrawerOpen(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setDrawerOpen(false);
+});
+
 el.episodeList.addEventListener('click', (e) => {
   const btn = e.target.closest('.episode-item');
   if (!btn) return;
   const ep = state.episodes[Number(btn.dataset.idx)];
-  if (ep) selectEpisode(ep);
+  if (ep) {
+    setDrawerOpen(false);
+    selectEpisode(ep);
+  }
 });
 
 el.tracklistContainer.addEventListener('click', (e) => {

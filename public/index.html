@@ -10,9 +10,14 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="brand">
-        <h1>My Tiny Morning Show</h1>
-        <span class="subtitle">Bob Boilen &middot; WOWD 94.3 FM &middot; Mixcloud + Spinitron</span>
+      <div class="topbar-row">
+        <button id="episodes-toggle" type="button" class="episodes-toggle" aria-controls="sidebar" aria-expanded="false">
+          &#9776; Episodes
+        </button>
+        <div class="brand">
+          <h1>My Tiny Morning Show</h1>
+          <span class="subtitle">Bob Boilen &middot; WOWD 94.3 FM &middot; Mixcloud + Spinitron</span>
+        </div>
       </div>
       <div class="topbar-actions">
         <input id="track-search" type="search" placeholder="Filter songs or artists..." autocomplete="off">
@@ -20,10 +25,14 @@
     </header>
 
     <div class="layout">
-      <aside class="sidebar">
+      <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true"></div>
+      <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
           <h2>Episodes</h2>
-          <span id="episode-count" class="badge">...</span>
+          <div class="sidebar-header-right">
+            <span id="episode-count" class="badge">...</span>
+            <button id="drawer-close" type="button" class="drawer-close" aria-label="Close episodes">&times;</button>
+          </div>
         </div>
         <div id="episode-list" class="episode-list">
           <div class="status">Loading episodes...</div>
