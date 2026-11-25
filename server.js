@@ -66,6 +66,13 @@ function getCanonicalOrigin(req) {
   return `${proto}://${host}`;
 }
 
+function pickPreviewImage(trackArtwork, epPicture) {
+  if (trackArtwork && !/\.svg(?:$|\?)/i.test(trackArtwork) && !/\/placeholders\//i.test(trackArtwork)) {
+    return trackArtwork;
+  }
+  return epPicture || null;
+}
+
 async function resolveShareMeta(req, url) {
   const epSlug = url.searchParams.get('ep')?.trim() || '';
   if (!/^[a-z0-9-]+$/i.test(epSlug)) return null;
@@ -105,7 +112,7 @@ async function resolveShareMeta(req, url) {
         title: `${label} · My Tiny Morning Show`,
         ogTitle: label,
         description: descParts.join(' · '),
-        image: track.artwork || ep.picture || null,
+        image: pickPreviewImage(track.artwork, ep.picture),
         type: 'music.song',
         url: `${origin}/?${canonicalParams.toString()}`,
       };
