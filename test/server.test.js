@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, pickPreviewImage, getCanonicalOrigin } from '../server.js';
+import { createStore } from '../lib/db.js';
 
 const SAMPLE_EPISODES = [
   {
@@ -50,13 +51,18 @@ const SAMPLE_TRACKS = {
 };
 
 async function startTestServer(overrides = {}) {
-  const server = createServer(overrides);
+  const store = overrides.store ?? createStore({ url: ':memory:' });
+  const server = createServer({ store, ...overrides });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   return {
     server,
+    store,
     baseUrl: `http://127.0.0.1:${port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: async () => {
+      await new Promise((resolve) => server.close(resolve));
+      if (!overrides.store) await store.close();
+    },
   };
 }
 
@@ -227,5 +233,162 @@ describe('HTTP error and timeout handling', () => {
       console.error = originalConsoleError;
       await srv.close();
     }
+  });
+});
+
+describe('Favorites and Lists REST API + SSR list share meta', () => {
+  let srv;
+
+  before(async () => {
+    srv = await startTestServer({
+      getEpisodes: async () => SAMPLE_EPISODES,
+      getEpisodeTracks: async () => SAMPLE_TRACKS,
+    });
+  });
+
+  after(async () => {
+    await srv.close();
+  });
+
+  it('creates, lists, validates, and deletes favorites', async () => {
+    const empty = await fetch(`${srv.baseUrl}/api/favorites`);
+    assert.equal(empty.status, 200);
+    assert.deepEqual(await empty.json(), { favorites: [] });
+
+    const invalid = await fetch(`${srv.baseUrl}/api/favorites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episodeSlug: 'bad slug!', trackIndex: 0 }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const badJson = await fetch(`${srv.baseUrl}/api/favorites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    assert.equal(badJson.status, 400);
+
+    const created = await fetch(`${srv.baseUrl}/api/favorites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        episodeSlug: 'ep-one',
+        trackIndex: 1,
+        artist: 'Second & Band',
+        song: 'Sun "Rise"',
+        album: 'Dawn <LP>',
+        time: '8:03 AM',
+        offsetSeconds: 185,
+        artwork: 'https://cdn.example/art/track2.jpg',
+        episodeName: 'Morning Show',
+        episodeDate: '2026-01-10',
+        mixcloudKey: '/bob-boilen/ep-one/',
+      }),
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json();
+    assert.equal(createdBody.favorite.song, 'Sun "Rise"');
+
+    const listed = await (await fetch(`${srv.baseUrl}/api/favorites`)).json();
+    assert.equal(listed.favorites.length, 1);
+
+    const del = await fetch(`${srv.baseUrl}/api/favorites/ep-one/1`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    assert.deepEqual(await del.json(), { deleted: true });
+
+    const afterDel = await (await fetch(`${srv.baseUrl}/api/favorites`)).json();
+    assert.equal(afterDel.favorites.length, 0);
+  });
+
+  it('supports full list lifecycle, item add/remove, validation, and SSR share meta', async () => {
+    const missing = await fetch(`${srv.baseUrl}/api/lists/no-such-list`);
+    assert.equal(missing.status, 404);
+
+    const badName = await fetch(`${srv.baseUrl}/api/lists`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '   ' }),
+    });
+    assert.equal(badName.status, 400);
+
+    const createRes = await fetch(`${srv.baseUrl}/api/lists`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Rainy & <Chill>', description: 'Coffee tunes' }),
+    });
+    assert.equal(createRes.status, 201);
+    const { list } = await createRes.json();
+    assert.ok(list.id);
+
+    const addSvgItem = await fetch(`${srv.baseUrl}/api/lists/${list.id}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        episodeSlug: 'ep-one',
+        trackIndex: 2,
+        artist: 'Third Artist',
+        song: 'Vector Art Song',
+        offsetSeconds: 480,
+        artwork: 'https://cdn.example/art/icon.svg',
+        mixcloudKey: '/bob-boilen/ep-one/',
+      }),
+    });
+    assert.equal(addSvgItem.status, 201);
+
+    const addRasterItem = await fetch(`${srv.baseUrl}/api/lists/${list.id}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        episodeSlug: 'ep-one',
+        trackIndex: 1,
+        artist: 'Second & Band',
+        song: 'Sun "Rise"',
+        offsetSeconds: 185,
+        artwork: 'https://cdn.example/art/track2.jpg',
+        mixcloudKey: '/bob-boilen/ep-one/',
+      }),
+    });
+    assert.equal(addRasterItem.status, 201);
+    const afterAdd = await addRasterItem.json();
+    assert.equal(afterAdd.list.items.length, 2);
+
+    const ssrRes = await fetch(`${srv.baseUrl}/?list=${list.id}`, {
+      headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'player.example.com' },
+    });
+    assert.equal(ssrRes.status, 200);
+    const ssrHtml = await ssrRes.text();
+    assert.match(ssrHtml, /<title>Rainy &amp; &lt;Chill&gt; · My Tiny Morning Show<\/title>/);
+    assert.match(ssrHtml, /property="og:type" content="music\.playlist"/);
+    assert.match(ssrHtml, /property="og:description" content="2 tracks · Coffee tunes · My Tiny Morning Show"/);
+    assert.match(ssrHtml, /property="og:image" content="https:\/\/cdn\.example\/art\/track2\.jpg"/);
+    assert.match(ssrHtml, new RegExp(`property="og:url" content="https://player\\.example\\.com/\\?list=${list.id}"`));
+
+    const ssrUnknown = await fetch(`${srv.baseUrl}/?list=does-not-exist`);
+    assert.equal(ssrUnknown.status, 200);
+    assert.doesNotMatch(await ssrUnknown.text(), /property="og:title"/);
+
+    const patchRes = await fetch(`${srv.baseUrl}/api/lists/${list.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Sunny Morning' }),
+    });
+    assert.equal(patchRes.status, 200);
+    assert.equal((await patchRes.json()).list.name, 'Sunny Morning');
+
+    const delItem = await fetch(`${srv.baseUrl}/api/lists/${list.id}/items/ep-one/1`, { method: 'DELETE' });
+    assert.equal(delItem.status, 200);
+    assert.deepEqual(await delItem.json(), { deleted: true });
+
+    const allLists = await (await fetch(`${srv.baseUrl}/api/lists`)).json();
+    assert.equal(allLists.lists.length, 1);
+    assert.equal(allLists.lists[0].itemCount, 1);
+
+    const delList = await fetch(`${srv.baseUrl}/api/lists/${list.id}`, { method: 'DELETE' });
+    assert.equal(delList.status, 200);
+    assert.deepEqual(await delList.json(), { deleted: true });
+
+    const afterDelete = await fetch(`${srv.baseUrl}/api/lists/${list.id}`);
+    assert.equal(afterDelete.status, 404);
   });
 });

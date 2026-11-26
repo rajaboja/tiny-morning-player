@@ -3,10 +3,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEpisodes, getEpisodeTracks, getTracklist } from './lib/sources.js';
+import { createStore } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT) || 3000;
+const MAX_JSON_BODY_BYTES = 64 * 1024;
+const SLUG_RE = /^[a-z0-9-]+$/i;
+const LIST_ID_RE = /^[a-z0-9_-]{1,64}$/i;
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -73,15 +84,113 @@ export function pickPreviewImage(trackArtwork, epPicture) {
   return epPicture || null;
 }
 
+async function readJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
+  let bytes = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      throw new HttpError(413, 'Request body too large');
+    }
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  if (!raw) throw new HttpError(400, 'Empty JSON body');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, 'Invalid JSON body');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new HttpError(400, 'JSON body must be an object');
+  }
+  return parsed;
+}
+
+function cleanText(val, maxLen = 300) {
+  if (val === null || val === undefined) return '';
+  return String(val).trim().slice(0, maxLen);
+}
+
+function validateSavedTrackInput(body) {
+  const episodeSlug = cleanText(body.episodeSlug, 200);
+  if (!SLUG_RE.test(episodeSlug)) {
+    throw new HttpError(400, 'Invalid episodeSlug');
+  }
+  const trackIndex = Number(body.trackIndex);
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new HttpError(400, 'Invalid trackIndex');
+  }
+  const offsetSeconds = Number(body.offsetSeconds ?? 0);
+  if (!Number.isFinite(offsetSeconds) || offsetSeconds < 0) {
+    throw new HttpError(400, 'Invalid offsetSeconds');
+  }
+  return {
+    episodeSlug,
+    trackIndex,
+    artist: cleanText(body.artist, 300),
+    song: cleanText(body.song, 300),
+    album: cleanText(body.album, 300),
+    time: cleanText(body.time, 40),
+    offsetSeconds: Math.floor(offsetSeconds),
+    artwork: body.artwork ? cleanText(body.artwork, 1000) : null,
+    episodeName: cleanText(body.episodeName, 300),
+    episodeDate: body.episodeDate ? cleanText(body.episodeDate, 32) : null,
+    mixcloudKey: cleanText(body.mixcloudKey, 300),
+  };
+}
+
+function validateListInput(body, { partial = false } = {}) {
+  const out = {};
+  if (!partial || body.name !== undefined) {
+    const name = cleanText(body.name, 120);
+    if (!name) throw new HttpError(400, 'List name is required');
+    out.name = name;
+  }
+  if (body.description !== undefined) {
+    out.description = cleanText(body.description, 500);
+  }
+  return out;
+}
+
 async function resolveShareMeta(req, url, deps) {
+  const origin = getCanonicalOrigin(req);
+  const listId = url.searchParams.get('list')?.trim() || '';
+  if (listId) {
+    if (!LIST_ID_RE.test(listId)) return null;
+    const list = await withTimeout(deps.store.getList(listId), deps.metaTimeoutMs);
+    if (!list) return null;
+    const countLabel = `${list.items.length} ${list.items.length === 1 ? 'track' : 'tracks'}`;
+    const descParts = [countLabel];
+    if (list.description) descParts.push(list.description);
+    descParts.push('My Tiny Morning Show');
+    let image = null;
+    for (const item of list.items) {
+      const candidate = pickPreviewImage(item.artwork, null);
+      if (candidate) {
+        image = candidate;
+        break;
+      }
+    }
+    const canonicalParams = new URLSearchParams({ list: list.id });
+    return {
+      title: `${list.name} · My Tiny Morning Show`,
+      ogTitle: list.name,
+      description: descParts.join(' · '),
+      image,
+      type: 'music.playlist',
+      url: `${origin}/?${canonicalParams.toString()}`,
+    };
+  }
+
   const epSlug = url.searchParams.get('ep')?.trim() || '';
-  if (!/^[a-z0-9-]+$/i.test(epSlug)) return null;
+  if (!SLUG_RE.test(epSlug)) return null;
 
   const episodes = await withTimeout(deps.getEpisodes(), deps.metaTimeoutMs);
   const ep = episodes.find((item) => item.slug === epSlug);
   if (!ep) return null;
 
-  const origin = getCanonicalOrigin(req);
   const trackRaw = url.searchParams.get('track')?.trim() || '';
   const tRaw = url.searchParams.get('t')?.trim() || '';
   const trackNum = /^\d+$/.test(trackRaw) ? Number(trackRaw) : null;
@@ -183,15 +292,18 @@ async function serveStatic(res, pathname) {
 }
 
 export function createServer(overrides = {}) {
+  const ownsStore = !overrides.store;
+  const store = overrides.store ?? createStore();
   const deps = {
-    getEpisodes,
-    getEpisodeTracks,
+    store,
+    getEpisodes: (refresh) => getEpisodes(refresh, store),
+    getEpisodeTracks: (slug, spinitronId) => getEpisodeTracks(slug, spinitronId, store),
     getTracklist,
     metaTimeoutMs: 3000,
     ...overrides,
   };
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const { pathname } = url;
@@ -219,7 +331,85 @@ export function createServer(overrides = {}) {
         return sendJson(res, 200, data);
       }
 
-      if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html') && url.searchParams.has('ep')) {
+      if (pathname === '/api/favorites') {
+        if (req.method === 'GET') {
+          const favorites = await deps.store.listFavorites();
+          return sendJson(res, 200, { favorites });
+        }
+        if (req.method === 'POST') {
+          const body = await readJsonBody(req);
+          const item = validateSavedTrackInput(body);
+          const favorite = await deps.store.addFavorite(item);
+          return sendJson(res, 201, { favorite });
+        }
+      }
+
+      const favDeleteMatch = pathname.match(/^\/api\/favorites\/([a-z0-9-]+)\/(\d+)$/i);
+      if (req.method === 'DELETE' && favDeleteMatch) {
+        const deleted = await deps.store.removeFavorite(favDeleteMatch[1], Number(favDeleteMatch[2]));
+        return sendJson(res, 200, { deleted });
+      }
+
+      if (pathname === '/api/lists') {
+        if (req.method === 'GET') {
+          const lists = await deps.store.getLists();
+          return sendJson(res, 200, { lists });
+        }
+        if (req.method === 'POST') {
+          const body = await readJsonBody(req);
+          const input = validateListInput(body);
+          const list = await deps.store.createList(input);
+          return sendJson(res, 201, { list });
+        }
+      }
+
+      const listItemDeleteMatch = pathname.match(/^\/api\/lists\/([a-z0-9_-]{1,64})\/items\/([a-z0-9-]+)\/(\d+)$/i);
+      if (req.method === 'DELETE' && listItemDeleteMatch) {
+        const result = await deps.store.removeListItem(
+          listItemDeleteMatch[1],
+          listItemDeleteMatch[2],
+          Number(listItemDeleteMatch[3]),
+        );
+        if (result === null) return sendJson(res, 404, { error: 'List not found' });
+        return sendJson(res, 200, { deleted: result });
+      }
+
+      const listItemsMatch = pathname.match(/^\/api\/lists\/([a-z0-9_-]{1,64})\/items$/i);
+      if (req.method === 'POST' && listItemsMatch) {
+        const body = await readJsonBody(req);
+        const item = validateSavedTrackInput(body);
+        const list = await deps.store.addListItem(listItemsMatch[1], item);
+        if (!list) return sendJson(res, 404, { error: 'List not found' });
+        return sendJson(res, 201, { list });
+      }
+
+      const listMatch = pathname.match(/^\/api\/lists\/([a-z0-9_-]{1,64})$/i);
+      if (listMatch) {
+        const listId = listMatch[1];
+        if (req.method === 'GET') {
+          const list = await deps.store.getList(listId);
+          if (!list) return sendJson(res, 404, { error: 'List not found' });
+          return sendJson(res, 200, { list });
+        }
+        if (req.method === 'PATCH') {
+          const body = await readJsonBody(req);
+          const input = validateListInput(body, { partial: true });
+          const list = await deps.store.updateList(listId, input);
+          if (!list) return sendJson(res, 404, { error: 'List not found' });
+          return sendJson(res, 200, { list });
+        }
+        if (req.method === 'DELETE') {
+          const deleted = await deps.store.deleteList(listId);
+          if (!deleted) return sendJson(res, 404, { error: 'List not found' });
+          return sendJson(res, 200, { deleted: true });
+        }
+      }
+
+      if (
+        req.method === 'GET' &&
+        (pathname === '/' || pathname === '/index.html') &&
+        (url.searchParams.has('ep') || url.searchParams.has('list'))
+      ) {
         return await serveIndexWithMeta(req, res, url, deps);
       }
 
@@ -230,10 +420,22 @@ export function createServer(overrides = {}) {
       res.writeHead(405);
       res.end('Method Not Allowed');
     } catch (err) {
+      if (err instanceof HttpError) {
+        return sendJson(res, err.status, { error: err.message });
+      }
       console.error(err);
       sendJson(res, 500, { error: err.message || 'Internal Server Error' });
     }
   });
+
+  server.store = store;
+  if (ownsStore) {
+    server.on('close', () => {
+      store.close().catch(() => {});
+    });
+  }
+
+  return server;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
