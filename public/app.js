@@ -1,3 +1,14 @@
+import {
+  formatDuration,
+  escapeHtml,
+  formatEpisodeLength,
+  formatTrackLabel,
+  parseDeepLink,
+  buildTrackUrl,
+  resolveTrackIndexByTime,
+  filterTracks,
+} from './lib.js';
+
 const DEFAULT_TITLE = document.title;
 const SHARE_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
 const CHECK_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -43,58 +54,6 @@ function setDrawerOpen(open) {
   el.episodesToggle.setAttribute('aria-expanded', String(open));
 }
 
-function formatDuration(seconds) {
-  const s = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-  }
-  return `${m}:${String(sec).padStart(2, '0')}`;
-}
-
-function escapeHtml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function formatEpisodeLength(seconds) {
-  if (!seconds) return '';
-  const mins = Math.round(seconds / 60);
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
-}
-
-function formatTrackLabel(track) {
-  if (track.artist && track.song) return `${track.artist} — ${track.song}`;
-  return track.song || track.artist || 'Track';
-}
-
-function parseDeepLink() {
-  const params = new URLSearchParams(window.location.search);
-  const ep = params.get('ep')?.trim() || null;
-  const trackRaw = params.get('track')?.trim() || '';
-  const tRaw = params.get('t')?.trim() || '';
-  const trackNum = /^\d+$/.test(trackRaw) ? Number(trackRaw) : null;
-  const trackIndex = trackNum && trackNum >= 1 ? trackNum - 1 : null;
-  const seconds = /^\d+$/.test(tRaw) ? Number(tRaw) : null;
-  return { ep, trackIndex, seconds };
-}
-
-function buildTrackUrl(epSlug, trackIdx = null) {
-  const url = new URL('/', window.location.origin);
-  if (epSlug) url.searchParams.set('ep', epSlug);
-  if (trackIdx !== null && trackIdx >= 0) {
-    url.searchParams.set('track', String(trackIdx + 1));
-  }
-  return url.toString();
-}
-
 function syncUrl(ep, trackIdx = null) {
   if (!ep) return;
   const params = new URLSearchParams();
@@ -110,17 +69,6 @@ function syncUrl(ep, trackIdx = null) {
   if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
     window.history.replaceState(null, '', nextUrl);
   }
-}
-
-function resolveTrackIndexByTime(seconds) {
-  if (!state.tracks.length) return null;
-  let idx = 0;
-  for (let i = 0; i < state.tracks.length; i++) {
-    const start = Math.max(0, state.tracks[i].offsetSeconds + state.syncOffsetSeconds);
-    if (seconds >= start) idx = i;
-    else break;
-  }
-  return idx;
 }
 
 function renderEpisodes() {
@@ -148,17 +96,7 @@ function renderEpisodes() {
 }
 
 function renderTracks() {
-  const q = state.filter.trim().toLowerCase();
-  const filtered = state.tracks
-    .map((t, idx) => ({ ...t, _idx: idx }))
-    .filter((t) => {
-      if (!q) return true;
-      return (
-        t.song.toLowerCase().includes(q) ||
-        t.artist.toLowerCase().includes(q) ||
-        t.album.toLowerCase().includes(q)
-      );
-    });
+  const filtered = filterTracks(state.tracks, state.filter);
 
   if (!filtered.length) {
     el.tracklistContainer.innerHTML = '<div class="status">No matching tracks.</div>';
@@ -381,7 +319,7 @@ async function selectEpisode(ep, options = {}) {
       if (deepLink.trackIndex !== null && deepLink.trackIndex < state.tracks.length) {
         targetIdx = deepLink.trackIndex;
       } else if (deepLink.seconds !== null) {
-        targetIdx = resolveTrackIndexByTime(deepLink.seconds);
+        targetIdx = resolveTrackIndexByTime(state.tracks, deepLink.seconds, state.syncOffsetSeconds);
       }
       if (targetIdx !== null && state.tracks[targetIdx]) {
         syncUrl(ep, targetIdx);
@@ -449,7 +387,7 @@ async function shareTrack(trackIdx, btn) {
   const ep = state.selectedEpisode;
   if (!track || !ep) return;
 
-  const url = buildTrackUrl(ep.slug, trackIdx);
+  const url = buildTrackUrl(window.location.origin, ep.slug, trackIdx);
   const label = formatTrackLabel(track);
   const isTouchDevice = window.matchMedia?.('(pointer: coarse)').matches;
 
@@ -516,7 +454,7 @@ document.querySelectorAll('.sync-control button').forEach((btn) => {
 });
 
 async function init() {
-  const deepLink = parseDeepLink();
+  const deepLink = parseDeepLink(window.location.search);
   try {
     const res = await fetch('/api/episodes');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

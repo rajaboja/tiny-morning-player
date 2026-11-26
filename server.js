@@ -57,7 +57,7 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-function getCanonicalOrigin(req) {
+export function getCanonicalOrigin(req) {
   const rawProto = req.headers['x-forwarded-proto'];
   const protoCandidate = typeof rawProto === 'string' ? rawProto.split(',')[0].trim().toLowerCase() : '';
   const proto = protoCandidate === 'https' || protoCandidate === 'http' ? protoCandidate : 'http';
@@ -66,18 +66,18 @@ function getCanonicalOrigin(req) {
   return `${proto}://${host}`;
 }
 
-function pickPreviewImage(trackArtwork, epPicture) {
+export function pickPreviewImage(trackArtwork, epPicture) {
   if (trackArtwork && !/\.svg(?:$|\?)/i.test(trackArtwork) && !/\/placeholders\//i.test(trackArtwork)) {
     return trackArtwork;
   }
   return epPicture || null;
 }
 
-async function resolveShareMeta(req, url) {
+async function resolveShareMeta(req, url, deps) {
   const epSlug = url.searchParams.get('ep')?.trim() || '';
   if (!/^[a-z0-9-]+$/i.test(epSlug)) return null;
 
-  const episodes = await withTimeout(getEpisodes(), 3000);
+  const episodes = await withTimeout(deps.getEpisodes(), deps.metaTimeoutMs);
   const ep = episodes.find((item) => item.slug === epSlug);
   if (!ep) return null;
 
@@ -88,7 +88,7 @@ async function resolveShareMeta(req, url) {
   const seconds = /^\d+$/.test(tRaw) ? Number(tRaw) : null;
 
   if ((trackNum && trackNum >= 1) || seconds !== null) {
-    const data = await withTimeout(getEpisodeTracks(ep.slug, ep.spinitronId), 3000).catch(() => null);
+    const data = await withTimeout(deps.getEpisodeTracks(ep.slug, ep.spinitronId), deps.metaTimeoutMs).catch(() => null);
     const tracks = data?.tracks || [];
     let trackIdx = null;
     if (trackNum && trackNum >= 1 && trackNum <= tracks.length) {
@@ -130,7 +130,7 @@ async function resolveShareMeta(req, url) {
   };
 }
 
-function injectShareMeta(html, meta) {
+export function injectShareMeta(html, meta) {
   const tags = [
     `<meta name="description" content="${escapeHtml(meta.description)}">`,
     `<meta property="og:site_name" content="My Tiny Morning Show">`,
@@ -150,9 +150,9 @@ function injectShareMeta(html, meta) {
     .replace(/<\/head>/i, () => `  ${tags}\n</head>`);
 }
 
-async function serveIndexWithMeta(req, res, url) {
+async function serveIndexWithMeta(req, res, url, deps) {
   let html = await fs.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  const meta = await resolveShareMeta(req, url).catch(() => null);
+  const meta = await resolveShareMeta(req, url, deps).catch(() => null);
   if (meta) {
     html = injectShareMeta(html, meta);
   }
@@ -182,50 +182,63 @@ async function serveStatic(res, pathname) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const { pathname } = url;
+export function createServer(overrides = {}) {
+  const deps = {
+    getEpisodes,
+    getEpisodeTracks,
+    getTracklist,
+    metaTimeoutMs: 3000,
+    ...overrides,
+  };
 
-    if (req.method === 'GET' && pathname === '/health') {
-      return sendJson(res, 200, { ok: true });
+  return http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const { pathname } = url;
+
+      if (req.method === 'GET' && pathname === '/health') {
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/episodes') {
+        const refresh = url.searchParams.get('refresh') === '1';
+        const episodes = await deps.getEpisodes(refresh);
+        return sendJson(res, 200, { episodes });
+      }
+
+      const episodeTracksMatch = pathname.match(/^\/api\/episodes\/([a-z0-9-]+)\/tracks$/i);
+      if (req.method === 'GET' && episodeTracksMatch) {
+        const spinitronId = url.searchParams.get('spinitronId');
+        const data = await deps.getEpisodeTracks(episodeTracksMatch[1], spinitronId);
+        return sendJson(res, 200, data);
+      }
+
+      const trackMatch = pathname.match(/^\/api\/tracks\/(\d+)$/);
+      if (req.method === 'GET' && trackMatch) {
+        const data = await deps.getTracklist(trackMatch[1]);
+        return sendJson(res, 200, data);
+      }
+
+      if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html') && url.searchParams.has('ep')) {
+        return await serveIndexWithMeta(req, res, url, deps);
+      }
+
+      if (req.method === 'GET') {
+        return await serveStatic(res, pathname);
+      }
+
+      res.writeHead(405);
+      res.end('Method Not Allowed');
+    } catch (err) {
+      console.error(err);
+      sendJson(res, 500, { error: err.message || 'Internal Server Error' });
     }
+  });
+}
 
-    if (req.method === 'GET' && pathname === '/api/episodes') {
-      const refresh = url.searchParams.get('refresh') === '1';
-      const episodes = await getEpisodes(refresh);
-      return sendJson(res, 200, { episodes });
-    }
-
-    const episodeTracksMatch = pathname.match(/^\/api\/episodes\/([a-z0-9-]+)\/tracks$/i);
-    if (req.method === 'GET' && episodeTracksMatch) {
-      const spinitronId = url.searchParams.get('spinitronId');
-      const data = await getEpisodeTracks(episodeTracksMatch[1], spinitronId);
-      return sendJson(res, 200, data);
-    }
-
-    const trackMatch = pathname.match(/^\/api\/tracks\/(\d+)$/);
-    if (req.method === 'GET' && trackMatch) {
-      const data = await getTracklist(trackMatch[1]);
-      return sendJson(res, 200, data);
-    }
-
-    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html') && url.searchParams.has('ep')) {
-      return await serveIndexWithMeta(req, res, url);
-    }
-
-    if (req.method === 'GET') {
-      return await serveStatic(res, pathname);
-    }
-
-    res.writeHead(405);
-    res.end('Method Not Allowed');
-  } catch (err) {
-    console.error(err);
-    sendJson(res, 500, { error: err.message || 'Internal Server Error' });
-  }
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Tiny Morning Player listening on http://0.0.0.0:${PORT}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const server = createServer();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Tiny Morning Player listening on http://0.0.0.0:${PORT}`);
+  });
+}
