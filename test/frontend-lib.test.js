@@ -7,6 +7,8 @@ import {
   formatTrackLabel,
   parseDeepLink,
   buildTrackUrl,
+  buildListUrl,
+  makeTrackKey,
   resolveTrackIndexByTime,
   filterTracks,
 } from '../public/lib.js';
@@ -37,30 +39,42 @@ describe('frontend pure helpers (public/lib.js)', () => {
   it('parses deep link query params', () => {
     assert.deepEqual(parseDeepLink('?ep=my-show&track=3'), {
       ep: 'my-show',
+      list: null,
       trackIndex: 2,
       seconds: null,
     });
     assert.deepEqual(parseDeepLink('?ep= my-show &t=245'), {
       ep: 'my-show',
+      list: null,
       trackIndex: null,
       seconds: 245,
     });
+    assert.deepEqual(parseDeepLink('?list=abc123'), {
+      ep: null,
+      list: 'abc123',
+      trackIndex: null,
+      seconds: null,
+    });
     assert.deepEqual(parseDeepLink('?ep=my-show&track=0&t=abc'), {
       ep: 'my-show',
+      list: null,
       trackIndex: null,
       seconds: null,
     });
     assert.deepEqual(parseDeepLink(''), {
       ep: null,
+      list: null,
       trackIndex: null,
       seconds: null,
     });
   });
 
-  it('builds canonical episode and track share URLs', () => {
+  it('builds canonical episode, track, and list share URLs and track keys', () => {
     assert.equal(buildTrackUrl('https://player.example.com', 'ep-1'), 'https://player.example.com/?ep=ep-1');
     assert.equal(buildTrackUrl('https://player.example.com', 'ep-1', 0), 'https://player.example.com/?ep=ep-1&track=1');
     assert.equal(buildTrackUrl('https://player.example.com', 'ep-1', 4), 'https://player.example.com/?ep=ep-1&track=5');
+    assert.equal(buildListUrl('https://player.example.com', 'xyz99'), 'https://player.example.com/?list=xyz99');
+    assert.equal(makeTrackKey('ep-1', 2), 'ep-1:2');
   });
 
   it('resolves active track index from playback time and sync offset', () => {

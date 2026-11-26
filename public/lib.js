@@ -33,12 +33,13 @@ export function formatTrackLabel(track) {
 export function parseDeepLink(search) {
   const params = new URLSearchParams(search);
   const ep = params.get('ep')?.trim() || null;
+  const list = params.get('list')?.trim() || null;
   const trackRaw = params.get('track')?.trim() || '';
   const tRaw = params.get('t')?.trim() || '';
   const trackNum = /^\d+$/.test(trackRaw) ? Number(trackRaw) : null;
   const trackIndex = trackNum && trackNum >= 1 ? trackNum - 1 : null;
   const seconds = /^\d+$/.test(tRaw) ? Number(tRaw) : null;
-  return { ep, trackIndex, seconds };
+  return { ep, list, trackIndex, seconds };
 }
 
 export function buildTrackUrl(origin, epSlug, trackIdx = null) {
@@ -48,6 +49,16 @@ export function buildTrackUrl(origin, epSlug, trackIdx = null) {
     url.searchParams.set('track', String(trackIdx + 1));
   }
   return url.toString();
+}
+
+export function buildListUrl(origin, listId) {
+  const url = new URL('/', origin);
+  if (listId) url.searchParams.set('list', listId);
+  return url.toString();
+}
+
+export function makeTrackKey(episodeSlug, trackIndex) {
+  return `${episodeSlug}:${trackIndex}`;
 }
 
 export function resolveTrackIndexByTime(tracks, seconds, syncOffsetSeconds = 0) {

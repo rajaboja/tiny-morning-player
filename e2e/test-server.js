@@ -1,4 +1,5 @@
 import { createServer } from '../server.js';
+import { createStore } from '../lib/db.js';
 
 const PORT = Number(process.env.PORT) || 3100;
 const PLACEHOLDER_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23334155"/></svg>';
@@ -105,7 +106,10 @@ const TRACKS_BY_SLUG = {
   },
 };
 
+const store = createStore({ url: ':memory:' });
+
 const server = createServer({
+  store,
   getEpisodes: async () => EPISODES,
   getEpisodeTracks: async (slug) => TRACKS_BY_SLUG[slug] || { source: 'spinitron', slug, description: '', tracks: [] },
   getTracklist: async (id) => ({ playlistId: id, tracks: [] }),

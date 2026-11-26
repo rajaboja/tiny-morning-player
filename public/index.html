@@ -28,14 +28,30 @@
       <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true"></div>
       <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
-          <h2>Episodes</h2>
-          <div class="sidebar-header-right">
-            <span id="episode-count" class="badge">...</span>
-            <button id="drawer-close" type="button" class="drawer-close" aria-label="Close episodes">&times;</button>
+          <div class="sidebar-tabs" role="tablist" aria-label="Library navigation">
+            <button type="button" class="sidebar-tab active" data-tab="episodes" role="tab" aria-selected="true">
+              Episodes <span id="episode-count" class="badge">...</span>
+            </button>
+            <button type="button" class="sidebar-tab" data-tab="favorites" role="tab" aria-selected="false">
+              Favs <span id="favorites-count" class="badge">0</span>
+            </button>
+            <button type="button" class="sidebar-tab" data-tab="lists" role="tab" aria-selected="false">
+              Lists <span id="lists-count" class="badge">0</span>
+            </button>
           </div>
+          <button id="drawer-close" type="button" class="drawer-close" aria-label="Close episodes">&times;</button>
         </div>
         <div id="episode-list" class="episode-list">
           <div class="status">Loading episodes...</div>
+        </div>
+        <div id="lists-panel" class="lists-panel hidden">
+          <form id="create-list-form" class="create-list-form">
+            <input id="new-list-name" type="text" placeholder="New list name..." maxlength="120" autocomplete="off" required>
+            <button type="submit" class="primary-btn">Create</button>
+          </form>
+          <div id="lists-list" class="lists-list">
+            <div class="status">No lists yet.</div>
+          </div>
         </div>
       </aside>
 
@@ -60,6 +76,14 @@
           </div>
         </div>
 
+        <div id="collection-header" class="collection-header hidden">
+          <div class="collection-meta">
+            <h2 id="collection-title"></h2>
+            <p id="collection-subtitle" class="ep-desc"></p>
+          </div>
+          <div id="collection-actions" class="collection-actions"></div>
+        </div>
+
         <div id="tracklist-container" class="tracklist-container">
           <div class="status">Select an episode to view its tracklist.</div>
         </div>
@@ -70,6 +94,21 @@
       <div id="player-status" class="player-status">Pick a track to play it in Mixcloud</div>
       <div id="player-mount" class="player-mount"></div>
     </footer>
+  </div>
+
+  <div id="list-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="list-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="list-modal-title">Add to list</h3>
+        <button id="list-modal-close" type="button" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <p id="list-modal-track" class="modal-track-label"></p>
+      <div id="list-modal-options" class="modal-list-options"></div>
+      <form id="modal-create-list-form" class="create-list-form modal-create-form">
+        <input id="modal-new-list-name" type="text" placeholder="Create new list & add..." maxlength="120" autocomplete="off" required>
+        <button type="submit" class="primary-btn">Add</button>
+      </form>
+    </div>
   </div>
 
   <script src="https://widget.mixcloud.com/media/js/widgetApi.js"></script>

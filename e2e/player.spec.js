@@ -174,3 +174,119 @@ test('opens and closes mobile episodes drawer', async ({ page }) => {
   await page.locator('.episode-item', { hasText: 'Jan 03, 2026' }).click();
   await expect(page.locator('#sidebar')).not.toHaveClass(/open/);
 });
+
+test('persists favorited tracks across reloads and plays from Favorites view', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.track-row')).toHaveCount(3);
+  await expect(page.locator('#favorites-count')).toHaveText('0');
+
+  const favBtn = page.locator('.track-row').nth(1).locator('.fav-btn');
+  await favBtn.click();
+  await expect(favBtn).toHaveClass(/favorited/);
+  await expect(page.locator('#favorites-count')).toHaveText('1');
+
+  await page.reload();
+  await expect(page.locator('#favorites-count')).toHaveText('1');
+  await expect(page.locator('.track-row').nth(1).locator('.fav-btn')).toHaveClass(/favorited/);
+
+  await page.locator('.sidebar-tab[data-tab="favorites"]').click();
+  await expect(page.locator('#collection-title')).toHaveText('Favorites');
+  await expect(page.locator('.saved-track-row')).toHaveCount(1);
+  await expect(page.locator('.saved-track-row .track-song')).toHaveText('Time (You and I)');
+
+  await page.locator('.saved-track-row').first().click();
+  await expect(page.locator('#player-status')).toContainText('Khruangbin — Time (You and I)');
+  const seeks = await page.evaluate(() => window.__mixcloudMock.seeks);
+  expect(seeks).toContain(120);
+
+  await page.locator('.saved-track-row .fav-btn').first().click();
+  await expect(page.locator('#favorites-count')).toHaveText('0');
+  await expect(page.locator('#tracklist-container')).toContainText('No favorite tracks yet.');
+
+  await page.reload();
+  await expect(page.locator('#favorites-count')).toHaveText('0');
+});
+
+test('creates, persists, shares, renames, deep-links, and deletes custom lists', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__copiedText = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__copiedText = text;
+        },
+      },
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('.track-row')).toHaveCount(3);
+
+  // Add track 2 from episode 1 via modal and create a new list on the spot
+  await page.locator('.track-row').nth(1).locator('.list-add-btn').click();
+  await expect(page.locator('#list-modal')).toBeVisible();
+  await page.locator('#modal-new-list-name').fill('Morning Coffee');
+  await page.locator('#modal-create-list-form button[type="submit"]').click();
+  await expect(page.locator('#list-modal-options .modal-list-row')).toHaveCount(1);
+  await expect(page.locator('#list-modal-options .modal-list-row').first()).toHaveClass(/in-list/);
+  await page.locator('#list-modal-close').click();
+  await expect(page.locator('#list-modal')).toBeHidden();
+
+  // Switch to episode 2 and add track 2 to the existing list
+  await page.locator('.episode-item', { hasText: 'Jan 03, 2026' }).click();
+  await expect(page.locator('.track-row')).toHaveCount(2);
+  await page.locator('.track-row').nth(1).locator('.list-add-btn').click();
+  await page.locator('#list-modal-options .modal-list-row', { hasText: 'Morning Coffee' }).click();
+  await expect(page.locator('#list-modal-options .modal-list-row', { hasText: 'Morning Coffee' })).toHaveClass(/in-list/);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#list-modal')).toBeHidden();
+
+  // Reload to verify DB persistence
+  await page.reload();
+  await expect(page.locator('#lists-count')).toHaveText('1');
+
+  await page.locator('.sidebar-tab[data-tab="lists"]').click();
+  await expect(page.locator('.list-item', { hasText: 'Morning Coffee' })).toContainText('2');
+  await page.locator('.list-item', { hasText: 'Morning Coffee' }).click();
+
+  await expect(page.locator('#collection-title')).toHaveText('Morning Coffee');
+  await expect(page.locator('.saved-track-row')).toHaveCount(2);
+  await expect(page).toHaveURL(/\/\?list=[a-zA-Z0-9_-]+$/);
+
+  // Share list URL
+  await page.locator('#share-list-btn').click();
+  const copiedListUrl = await page.evaluate(() => window.__copiedText);
+  expect(copiedListUrl).toMatch(/^http:\/\/127\.0\.0\.1:3100\/\?list=[a-zA-Z0-9_-]+$/);
+
+  // Play track from list
+  await page.locator('.saved-track-row').nth(1).click();
+  await expect(page.locator('#player-status')).toContainText('Stereolab — French Disko');
+  const seeks = await page.evaluate(() => window.__mixcloudMock.seeks);
+  expect(seeks).toContain(240);
+
+  // Open shared list deep link directly
+  await page.goto(copiedListUrl);
+  await expect(page.locator('#collection-title')).toHaveText('Morning Coffee');
+  await expect(page.locator('.saved-track-row')).toHaveCount(2);
+
+  // Rename list
+  await page.locator('#rename-list-btn').click();
+  await page.locator('#rename-list-input').fill('Sunday Coffee');
+  await page.locator('#rename-list-form button[type="submit"]').click();
+  await expect(page.locator('#collection-title')).toHaveText('Sunday Coffee');
+
+  // Remove one track from the list
+  await page.locator('.saved-track-row').first().locator('.remove-item-btn').click();
+  await expect(page.locator('.saved-track-row')).toHaveCount(1);
+
+  // Unknown list deep link falls back gracefully
+  await page.goto('/?list=does-not-exist');
+  await expect(page.locator('#player-status')).toContainText('Shared list not found; showing latest episode.');
+
+  // Open renamed list and delete it
+  await page.locator('.sidebar-tab[data-tab="lists"]').click();
+  await page.locator('.list-item', { hasText: 'Sunday Coffee' }).click();
+  await page.locator('#delete-list-btn').click();
+  await expect(page.locator('#lists-count')).toHaveText('0');
+});
