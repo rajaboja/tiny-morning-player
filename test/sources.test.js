@@ -11,6 +11,7 @@ import {
   getMixcloudTracklist,
   getEpisodeTracks,
 } from '../lib/sources.js';
+import { createStore } from '../lib/db.js';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -306,5 +307,117 @@ describe('sources data fetching and merging', () => {
       () => getEpisodeTracks('both-down', '44444'),
       /Failed to load tracklist from Mixcloud and Spinitron/,
     );
+  });
+});
+
+describe('sources persistent archive integration', () => {
+  const originalFetch = globalThis.fetch;
+  let store;
+
+  beforeEach(async () => {
+    clearCache();
+    store = createStore({ url: ':memory:' });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    clearCache();
+    await store.close();
+  });
+
+  it('hydrates episodes from store on cold start, retains older archived episodes, and falls back on upstream errors', async () => {
+    await store.saveEpisodes([
+      {
+        slug: 'ep-archive-old',
+        mixcloudKey: '/bob-boilen/ep-archive-old/',
+        mixcloudUrl: 'https://www.mixcloud.com/bob-boilen/ep-archive-old/',
+        name: 'My Tiny Morning Show - Jan 1, 2025',
+        date: '2025-01-01',
+        audioLength: 3600,
+        picture: null,
+        createdTime: '2025-01-01T15:00:00Z',
+        spinitronId: '555',
+        spinitronUrl: 'https://spinitron.com/WOWD/pl/555/My-Tiny-Morning-Show',
+      },
+    ], Date.now());
+
+    let fetchCalls = 0;
+    globalThis.fetch = async (url) => {
+      fetchCalls++;
+      const s = String(url);
+      if (s.includes('api.mixcloud.com')) {
+        return jsonResponse({
+          data: [
+            {
+              key: '/bob-boilen/ep-fresh/',
+              url: 'https://www.mixcloud.com/bob-boilen/ep-fresh/',
+              name: 'My Tiny Morning Show - Feb 1, 2026',
+              slug: 'ep-fresh',
+              audio_length: 7200,
+              pictures: { large: 'https://img/fresh.jpg' },
+              created_time: '2026-02-01T15:00:00Z',
+            },
+          ],
+          paging: {},
+        });
+      }
+      return htmlResponse('<html><body></body></html>');
+    };
+
+    const hydrated = await getEpisodes(false, store);
+    assert.equal(fetchCalls, 0);
+    assert.equal(hydrated.length, 1);
+    assert.equal(hydrated[0].slug, 'ep-archive-old');
+
+    const refreshed = await getEpisodes(true, store);
+    assert.ok(fetchCalls > 0);
+    assert.equal(refreshed.length, 2);
+    assert.deepEqual(refreshed.map((e) => e.slug), ['ep-fresh', 'ep-archive-old']);
+
+    clearCache();
+    globalThis.fetch = async () => new Response('down', { status: 503 });
+    const fallback = await getEpisodes(true, store);
+    assert.equal(fallback.length, 2);
+    assert.equal(fallback[0].slug, 'ep-fresh');
+  });
+
+  it('archives episode tracklists, serves from store across memory clears, and falls back when upstream is down', async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = async (url) => {
+      fetchCalls++;
+      if (String(url).includes('graphql')) {
+        return jsonResponse({
+          data: {
+            cloudcastLookup: {
+              name: 'Show',
+              description: 'Persisted desc',
+              audioLength: 3600,
+              sections: [
+                { __typename: 'TrackSection', startSeconds: 15, artistName: 'Arc Artist', songName: 'Arc Song' },
+              ],
+            },
+          },
+        });
+      }
+      return new Response('down', { status: 503 });
+    };
+
+    const first = await getEpisodeTracks('ep-persisted', null, store);
+    assert.equal(first.tracks.length, 1);
+    assert.equal(fetchCalls, 1);
+
+    clearCache();
+    const fromStore = await getEpisodeTracks('ep-persisted', null, store);
+    assert.equal(fetchCalls, 1);
+    assert.equal(fromStore.tracks[0].song, 'Arc Song');
+    assert.equal(fromStore.fetchedAt, undefined);
+
+    await store.saveEpisodeTracks('ep-persisted', first, 1);
+    clearCache();
+    globalThis.fetch = async () => new Response('down', { status: 500 });
+    const fallback = await getEpisodeTracks('ep-persisted', null, store);
+    assert.equal(fallback.tracks.length, 1);
+    assert.equal(fallback.tracks[0].song, 'Arc Song');
   });
 });
