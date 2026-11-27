@@ -9,6 +9,9 @@ import {
   makeTrackKey,
   resolveTrackIndexByTime,
   filterTracks,
+  createPendingSeek,
+  evaluateSeekAttempt,
+  evaluateSeekProgress,
 } from './lib.js';
 
 const DEFAULT_TITLE = document.title;
@@ -36,8 +39,10 @@ const state = {
   syncOffsetSeconds: 0,
   loadedMixcloudKey: null,
   widget: null,
-  widgetReady: false,
-  pendingSeekSeconds: null,
+  widgetInitPromise: null,
+  switchingCount: 0,
+  playRequestId: 0,
+  pendingSeek: null,
   lastPositionSeconds: 0,
   activeTrackIndex: -1,
   activeSavedKey: null,
@@ -390,6 +395,45 @@ function updateActiveTrackFromProgress(positionSeconds) {
   }
 }
 
+function triggerPendingSeek(duration) {
+  if (!state.widget || state.switchingCount > 0 || !state.pendingSeek) return;
+  const result = evaluateSeekAttempt(state.pendingSeek, state.loadedMixcloudKey, Date.now(), duration);
+  state.pendingSeek = result.nextPending;
+  if (result.action === 'seek') {
+    Promise.resolve(state.widget.seek(result.target)).catch(() => {});
+  }
+}
+
+function attachWidgetListeners(widget) {
+  widget.events?.play?.on(() => {
+    if (state.switchingCount > 0 || !state.pendingSeek) return;
+    if (state.pendingSeek.nearTargetPos === null) {
+      triggerPendingSeek();
+    }
+  });
+
+  widget.events?.progress?.on((position, duration) => {
+    if (state.switchingCount > 0) return;
+
+    const result = evaluateSeekProgress(
+      state.pendingSeek,
+      state.loadedMixcloudKey,
+      position,
+      duration,
+      Date.now(),
+    );
+    state.pendingSeek = result.nextPending;
+
+    if (result.action === 'seek') {
+      Promise.resolve(widget.seek(result.seekTarget)).catch(() => {});
+    }
+    if (result.ignorePosition) return;
+
+    state.lastPositionSeconds = position;
+    updateActiveTrackFromProgress(position);
+  });
+}
+
 async function mountWidget(mixcloudKey, autoplay = false) {
   if (!state.widget) {
     const iframe = document.createElement('iframe');
@@ -399,44 +443,58 @@ async function mountWidget(mixcloudKey, autoplay = false) {
     el.playerMount.appendChild(iframe);
 
     state.loadedMixcloudKey = mixcloudKey;
-    state.widgetReady = false;
-
     const widget = window.Mixcloud.PlayerWidget(iframe);
     state.widget = widget;
-
-    await widget.ready;
-    state.widgetReady = true;
-
-    widget.events.progress.on((position) => {
-      state.lastPositionSeconds = position;
-      if (state.pendingSeekSeconds !== null && position > 0) {
-        const toSeek = state.pendingSeekSeconds;
-        state.pendingSeekSeconds = null;
-        if (Math.abs(position - toSeek) > 3) {
-          widget.seek(toSeek);
+    state.widgetInitPromise = (async () => {
+      try {
+        await widget.ready;
+        attachWidgetListeners(widget);
+      } catch (err) {
+        if (state.widget === widget) {
+          state.widget = null;
+          state.widgetInitPromise = null;
+          state.loadedMixcloudKey = null;
         }
+        throw err;
       }
-      updateActiveTrackFromProgress(position);
-    });
+    })();
+
+    await state.widgetInitPromise;
     return;
   }
+
+  await state.widgetInitPromise;
 
   if (state.loadedMixcloudKey !== mixcloudKey) {
     state.loadedMixcloudKey = mixcloudKey;
     state.lastPositionSeconds = 0;
-    await state.widget.ready;
-    await state.widget.load(mixcloudKey, autoplay);
+    state.switchingCount += 1;
+    try {
+      await state.widget.load(mixcloudKey, autoplay);
+    } finally {
+      state.switchingCount = Math.max(0, state.switchingCount - 1);
+    }
   }
 }
 
 async function ensureWidgetForEpisode(mixcloudKey, seekSeconds) {
+  const reqId = ++state.playRequestId;
   const target = Math.max(0, Math.floor(seekSeconds));
-  state.pendingSeekSeconds = target;
+  const episodeChanged = !state.widget || state.loadedMixcloudKey !== mixcloudKey;
+  state.pendingSeek = null;
 
   await mountWidget(mixcloudKey, true);
+  if (reqId !== state.playRequestId) return;
+
+  state.pendingSeek = target > 0 ? createPendingSeek(mixcloudKey, target) : null;
+
   await state.widget.play();
+  if (reqId !== state.playRequestId) return;
+
   if (target > 0) {
-    await state.widget.seek(target);
+    triggerPendingSeek();
+  } else if (!episodeChanged && state.lastPositionSeconds > 3) {
+    Promise.resolve(state.widget.seek(0)).catch(() => {});
   }
 }
 
@@ -485,11 +543,12 @@ async function playSavedTrack(item) {
 
 function showSharedTrackPrompt(trackIdx) {
   const track = state.tracks[trackIdx];
-  if (!track) return;
+  const ep = state.selectedEpisode;
+  if (!track || !ep) return;
 
   const targetSeconds = Math.max(0, track.offsetSeconds + state.syncOffsetSeconds);
   state.sharedTrackIndex = trackIdx;
-  state.pendingSeekSeconds = targetSeconds;
+  state.pendingSeek = createPendingSeek(ep.mixcloudKey, targetSeconds);
   renderTracks();
 
   const row = el.tracklistContainer.querySelector(`.track-row[data-idx="${trackIdx}"]`);
@@ -510,6 +569,9 @@ async function selectEpisode(ep, options = {}) {
   state.tracks = [];
   state.activeTrackIndex = -1;
   state.sharedTrackIndex = -1;
+  if (state.pendingSeek && state.pendingSeek.startedAt === null) {
+    state.pendingSeek = null;
+  }
   setSidebarTab('episodes');
   renderEpisodes();
   renderListsSidebar();
@@ -551,7 +613,7 @@ async function selectEpisode(ep, options = {}) {
       const seekAt = deepLink?.seconds || 0;
       if (deepLink) {
         syncUrl(ep);
-        if (seekAt > 0) state.pendingSeekSeconds = seekAt;
+        if (seekAt > 0) state.pendingSeek = createPendingSeek(ep.mixcloudKey, seekAt);
       }
       el.tracklistContainer.innerHTML = `
         <div class="status">

@@ -6,8 +6,12 @@ const MIXCLOUD_STUB_JS = `
     plays: 0,
     seeks: [],
     progressHandlers: [],
-    emitProgress(pos) {
-      for (const fn of this.progressHandlers) fn(pos);
+    playHandlers: [],
+    emitProgress(pos, dur) {
+      for (const fn of this.progressHandlers) fn(pos, dur);
+    },
+    emitPlay() {
+      for (const fn of this.playHandlers) fn();
     },
   };
   window.Mixcloud = {
@@ -27,6 +31,11 @@ const MIXCLOUD_STUB_JS = `
           return Promise.resolve();
         },
         events: {
+          play: {
+            on(fn) {
+              window.__mixcloudMock.playHandlers.push(fn);
+            },
+          },
           progress: {
             on(fn) {
               window.__mixcloudMock.progressHandlers.push(fn);
@@ -289,4 +298,112 @@ test('creates, persists, shares, renames, deep-links, and deletes custom lists',
   await page.locator('.list-item', { hasText: 'Sunday Coffee' }).click();
   await page.locator('#delete-list-btn').click();
   await expect(page.locator('#lists-count')).toHaveText('0');
+});
+
+test('re-seeks to shared track timestamp after uninitialized Mixcloud cold-start reset', async ({ page }) => {
+  await page.goto('/?ep=ep-morning-1&track=2');
+  await expect(page.locator('.track-row').nth(1)).toHaveClass(/shared/);
+
+  await page.locator('.status-play-btn').click();
+  await expect(page.locator('.track-row').nth(1)).toHaveClass(/playing/);
+
+  // Initial seek was sent
+  let seeks = await page.evaluate(() => window.__mixcloudMock.seeks.slice());
+  expect(seeks).toEqual([120]);
+
+  // Mixcloud emits a synthetic progress(120, 0) while audio is not yet loaded
+  await page.evaluate(() => window.__mixcloudMock.emitProgress(120, 0));
+
+  // Wait past retry cooldown, then simulate audio loading and resetting to position 0
+  await page.waitForTimeout(950);
+  await page.evaluate(() => {
+    window.__mixcloudMock.emitProgress(0, 7200);
+    window.__mixcloudMock.emitPlay();
+  });
+
+  // App must re-seek to 120 and must not flicker active row back to track 1
+  seeks = await page.evaluate(() => window.__mixcloudMock.seeks.slice());
+  expect(seeks).toEqual([120, 120]);
+  await expect(page.locator('.track-row').nth(1)).toHaveClass(/playing/);
+  await expect(page.locator('.track-row').nth(0)).not.toHaveClass(/playing/);
+
+  // Playback settles at 120 and advances to 121 -> pending seek confirmed and cleared
+  await page.evaluate(() => {
+    window.__mixcloudMock.emitProgress(120, 7200);
+    window.__mixcloudMock.emitProgress(121, 7200);
+  });
+
+  // Subsequent manual scrub to 310 must not be overridden back to 120
+  await page.evaluate(() => window.__mixcloudMock.emitProgress(310, 7200));
+  await expect(page.locator('.track-row').nth(2)).toHaveClass(/playing/);
+  seeks = await page.evaluate(() => window.__mixcloudMock.seeks.slice());
+  expect(seeks).toEqual([120, 120]);
+});
+
+test('waits for widget.ready when clicking a shared track before Mixcloud initializes', async ({ page }) => {
+  const DEFERRED_MIXCLOUD_STUB_JS = `
+    window.__mixcloudMock = {
+      loads: [],
+      plays: 0,
+      seeks: [],
+      progressHandlers: [],
+      playHandlers: [],
+      resolveReady: null,
+    };
+    window.Mixcloud = {
+      PlayerWidget() {
+        let resolveReady;
+        const widget = {
+          ready: new Promise((resolve) => { resolveReady = resolve; }),
+          events: {},
+        };
+        window.__mixcloudMock.resolveReady = () => {
+          widget.load = (key, autoplay) => {
+            window.__mixcloudMock.loads.push({ key, autoplay });
+            return Promise.resolve();
+          };
+          widget.play = () => {
+            window.__mixcloudMock.plays += 1;
+            return Promise.resolve();
+          };
+          widget.seek = (seconds) => {
+            window.__mixcloudMock.seeks.push(seconds);
+            return Promise.resolve();
+          };
+          widget.events.play = {
+            on(fn) { window.__mixcloudMock.playHandlers.push(fn); },
+          };
+          widget.events.progress = {
+            on(fn) { window.__mixcloudMock.progressHandlers.push(fn); },
+          };
+          resolveReady(widget);
+        };
+        return widget;
+      },
+    };
+  `;
+
+  await page.route('https://widget.mixcloud.com/media/js/widgetApi.js', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: DEFERRED_MIXCLOUD_STUB_JS,
+    }),
+  );
+
+  await page.goto('/?ep=ep-morning-1&track=3');
+  await expect(page.locator('.status-play-btn')).toBeVisible();
+
+  // Click Play BEFORE widget.ready has resolved (methods are still undefined)
+  await page.locator('.status-play-btn').click();
+  await expect(page.locator('#player-status')).toContainText('5:00');
+
+  // Now finish Mixcloud iframe initialization
+  await page.evaluate(() => window.__mixcloudMock.resolveReady());
+
+  await expect.poll(async () => page.evaluate(() => ({
+    plays: window.__mixcloudMock.plays,
+    seeks: window.__mixcloudMock.seeks,
+  }))).toEqual({ plays: 1, seeks: [300] });
+  await expect(page.locator('#player-status')).not.toContainText('did not auto-seek');
 });
