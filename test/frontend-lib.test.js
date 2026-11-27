@@ -11,6 +11,12 @@ import {
   makeTrackKey,
   resolveTrackIndexByTime,
   filterTracks,
+  createPendingSeek,
+  clampSeekTarget,
+  evaluateSeekAttempt,
+  evaluateSeekProgress,
+  SEEK_MAX_ATTEMPTS,
+  SEEK_WINDOW_MS,
 } from '../public/lib.js';
 
 describe('frontend pure helpers (public/lib.js)', () => {
@@ -105,5 +111,90 @@ describe('frontend pure helpers (public/lib.js)', () => {
     assert.deepEqual(byArtist.map((t) => t._idx), [1]);
     const byAlbum = filterTracks(tracks, 'kind of blue');
     assert.deepEqual(byAlbum.map((t) => t._idx), [0]);
+  });
+
+  it('ignores synthetic dur=0 ticks, re-seeks after cold-start reset, and confirms once advancing near target', () => {
+    const key = '/bob-boilen/ep-1/';
+    let pending = createPendingSeek(key, 600);
+    assert.equal(pending.target, 600);
+    assert.equal(pending.startedAt, null);
+
+    // Initial seek attempt
+    let attempt = evaluateSeekAttempt(pending, key, 1000);
+    assert.equal(attempt.action, 'seek');
+    assert.equal(attempt.target, 600);
+    pending = attempt.nextPending;
+
+    // Mixcloud emits synthetic progress(600, 0) before audio loads: must be ignored
+    let res = evaluateSeekProgress(pending, key, 600, 0, 1050);
+    assert.equal(res.action, 'ignore');
+    assert.equal(res.ignorePosition, true);
+    assert.equal(res.nextPending, pending);
+
+    // Audio loads 3s later and resets position to 0 with real duration: must re-seek and suppress UI flicker
+    res = evaluateSeekProgress(pending, key, 0, 7050, 4050);
+    assert.equal(res.action, 'seek');
+    assert.equal(res.seekTarget, 600);
+    assert.equal(res.ignorePosition, true);
+    pending = res.nextPending;
+
+    // Play event arriving 15ms later is debounced by cooldown
+    attempt = evaluateSeekAttempt(pending, key, 4065, 7050);
+    assert.equal(attempt.action, 'wait');
+    pending = attempt.nextPending;
+
+    // Optimistic tick at 600 does not immediately clear pendingSeek
+    res = evaluateSeekProgress(pending, key, 600, 7050, 4100);
+    assert.equal(res.action, 'wait');
+    assert.notEqual(res.nextPending, null);
+    pending = res.nextPending;
+
+    // Transient reset to 0 within cooldown resets nearTarget tracking without spamming seek
+    res = evaluateSeekProgress(pending, key, 0, 7050, 4600);
+    assert.equal(res.action, 'wait');
+    assert.equal(res.ignorePosition, true);
+    assert.equal(res.nextPending.nearTargetPos, null);
+    pending = res.nextPending;
+
+    // Seek settles at 600, then advances to 601: confirmed and cleared
+    res = evaluateSeekProgress(pending, key, 600, 7050, 4650);
+    assert.equal(res.action, 'wait');
+    pending = res.nextPending;
+
+    res = evaluateSeekProgress(pending, key, 601, 7050, 5650);
+    assert.equal(res.action, 'confirmed');
+    assert.equal(res.nextPending, null);
+    assert.equal(res.ignorePosition, false);
+  });
+
+  it('clamps seek target to audio duration and stops retrying after max attempts or window expiry', () => {
+    const key = '/bob-boilen/ep-1/';
+    assert.equal(createPendingSeek(key, 0), null);
+    assert.equal(clampSeekTarget(7200, 7050), 7048);
+
+    // Passive shared-link pendingSeek starts its window only when playback starts
+    let pending = createPendingSeek(key, 7200);
+    let res = evaluateSeekProgress(pending, key, 0, 7050, 999999);
+    assert.equal(res.action, 'seek');
+    assert.equal(res.seekTarget, 7048);
+    pending = res.nextPending;
+
+    // Window expiry clears pendingSeek so manual playback is never hijacked forever
+    res = evaluateSeekProgress(pending, key, 10, 7050, 999999 + SEEK_WINDOW_MS + 1);
+    assert.equal(res.action, 'clear');
+    assert.equal(res.nextPending, null);
+
+    // Max attempts cap clears pendingSeek
+    pending = createPendingSeek(key, 300);
+    let t = 1000;
+    for (let i = 0; i < SEEK_MAX_ATTEMPTS; i++) {
+      const attempt = evaluateSeekAttempt(pending, key, t, 3600);
+      assert.equal(attempt.action, 'seek');
+      pending = attempt.nextPending;
+      t += 1000;
+    }
+    const capped = evaluateSeekAttempt(pending, key, t, 3600);
+    assert.equal(capped.action, 'clear');
+    assert.equal(capped.nextPending, null);
   });
 });

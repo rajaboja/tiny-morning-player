@@ -85,3 +85,108 @@ export function filterTracks(tracks, query) {
       );
     });
 }
+
+export const SEEK_TOLERANCE_SECONDS = 5;
+export const SEEK_RETRY_COOLDOWN_MS = 900;
+export const SEEK_MAX_ATTEMPTS = 8;
+export const SEEK_WINDOW_MS = 20000;
+
+export function createPendingSeek(mixcloudKey, targetSeconds) {
+  const target = Math.max(0, Math.floor(targetSeconds || 0));
+  if (!mixcloudKey || target <= 0) return null;
+  return {
+    mixcloudKey,
+    target,
+    startedAt: null,
+    attempts: 0,
+    lastSeekAt: 0,
+    nearTargetPos: null,
+    nearTargetTicks: 0,
+  };
+}
+
+export function clampSeekTarget(targetSeconds, duration) {
+  const target = Math.max(0, Math.floor(targetSeconds || 0));
+  if (typeof duration === 'number' && duration > 0) {
+    return Math.min(target, Math.max(0, Math.floor(duration) - 2));
+  }
+  return target;
+}
+
+export function evaluateSeekAttempt(pending, loadedMixcloudKey, now, duration) {
+  if (!pending || pending.mixcloudKey !== loadedMixcloudKey) {
+    return { action: 'wait', target: null, nextPending: pending };
+  }
+  const startedAt = pending.startedAt ?? now;
+  if (now - startedAt > SEEK_WINDOW_MS || pending.attempts >= SEEK_MAX_ATTEMPTS) {
+    return { action: 'clear', target: null, nextPending: null };
+  }
+  if (pending.lastSeekAt && now - pending.lastSeekAt < SEEK_RETRY_COOLDOWN_MS) {
+    return { action: 'wait', target: null, nextPending: { ...pending, startedAt } };
+  }
+  return {
+    action: 'seek',
+    target: clampSeekTarget(pending.target, duration),
+    nextPending: {
+      ...pending,
+      startedAt,
+      attempts: pending.attempts + 1,
+      lastSeekAt: now,
+    },
+  };
+}
+
+export function evaluateSeekProgress(pending, loadedMixcloudKey, position, duration, now) {
+  if (typeof duration === 'number' && duration <= 0) {
+    return { action: 'ignore', seekTarget: null, nextPending: pending, ignorePosition: true };
+  }
+
+  if (!pending || pending.mixcloudKey !== loadedMixcloudKey) {
+    return { action: 'none', seekTarget: null, nextPending: pending, ignorePosition: false };
+  }
+
+  if (typeof duration !== 'number') {
+    if (position <= 0) {
+      return { action: 'wait', seekTarget: null, nextPending: pending, ignorePosition: false };
+    }
+    if (Math.abs(position - pending.target) > SEEK_TOLERANCE_SECONDS) {
+      return { action: 'seek', seekTarget: pending.target, nextPending: null, ignorePosition: false };
+    }
+    return { action: 'confirmed', seekTarget: null, nextPending: null, ignorePosition: false };
+  }
+
+  const effectiveTarget = clampSeekTarget(pending.target, duration);
+  if (Math.abs(position - effectiveTarget) <= SEEK_TOLERANCE_SECONDS) {
+    if (pending.nearTargetPos !== null && position > pending.nearTargetPos) {
+      return { action: 'confirmed', seekTarget: null, nextPending: null, ignorePosition: false };
+    }
+    const nextTicks = pending.nearTargetTicks + 1;
+    if (nextTicks >= 3) {
+      return { action: 'confirmed', seekTarget: null, nextPending: null, ignorePosition: false };
+    }
+    const nextNearPos = pending.nearTargetPos === null ? position : Math.min(pending.nearTargetPos, position);
+    return {
+      action: 'wait',
+      seekTarget: null,
+      nextPending: {
+        ...pending,
+        startedAt: pending.startedAt ?? now,
+        nearTargetPos: nextNearPos,
+        nearTargetTicks: nextTicks,
+      },
+      ignorePosition: false,
+    };
+  }
+
+  const resetPending = { ...pending, nearTargetPos: null, nearTargetTicks: 0 };
+  const attempt = evaluateSeekAttempt(resetPending, loadedMixcloudKey, now, duration);
+  if (attempt.action === 'clear') {
+    return { action: 'clear', seekTarget: null, nextPending: null, ignorePosition: false };
+  }
+  return {
+    action: attempt.action,
+    seekTarget: attempt.target,
+    nextPending: attempt.nextPending,
+    ignorePosition: true,
+  };
+}
