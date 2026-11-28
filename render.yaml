@@ -4,19 +4,27 @@ services:
     branch: main
     runtime: node
     plan: free
-    buildCommand: ""
+    buildCommand: npm ci --omit=dev
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION
         value: 22
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
 
   - type: web
     name: tiny-morning-player-dev
     branch: dev
     runtime: node
     plan: free
-    buildCommand: ""
+    buildCommand: npm ci --omit=dev
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION
         value: 22
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

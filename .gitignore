@@ -1,3 +1,9 @@
 node_modules/
 .DS_Store
 *.log
+playwright-report/
+test-results/
+data/
+*.db
+*.db-wal
+*.db-shm

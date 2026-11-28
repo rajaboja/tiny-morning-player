@@ -5,9 +5,18 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "sync": "node scripts/sync.js",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "playwright test"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0"
   }
 }
