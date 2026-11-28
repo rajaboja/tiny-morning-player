@@ -117,6 +117,89 @@ describe('SQLite / libSQL store', () => {
     assert.equal(afterEmpty.fetchedAt, 6000);
   });
 
+  it('looks up episodes by slug, tracklists by spinitron ID, and summarizes tracklist sync state', async () => {
+    assert.equal(await store.getEpisodeBySlug('ep-one'), null);
+    assert.equal(await store.getTracklistBySpinitronId('123'), null);
+    assert.equal((await store.getTracklistSyncStates()).size, 0);
+
+    await store.saveEpisodes([
+      {
+        slug: 'ep-one',
+        mixcloudKey: '/bob-boilen/ep-one/',
+        mixcloudUrl: 'https://www.mixcloud.com/bob-boilen/ep-one/',
+        name: 'Show One',
+        date: '2026-01-10',
+        audioLength: 7200,
+        picture: 'https://img/1.jpg',
+        createdTime: '2026-01-10T15:00:00Z',
+        spinitronId: '123',
+        spinitronUrl: 'https://spinitron.com/WOWD/pl/123/My-Tiny-Morning-Show',
+      },
+      {
+        slug: 'ep-empty',
+        mixcloudKey: '/bob-boilen/ep-empty/',
+        mixcloudUrl: 'https://www.mixcloud.com/bob-boilen/ep-empty/',
+        name: 'Show Empty',
+        date: '2026-01-17',
+        audioLength: 3600,
+        picture: null,
+        createdTime: '2026-01-17T15:00:00Z',
+        spinitronId: null,
+        spinitronUrl: null,
+      },
+    ], 1000);
+
+    const ep = await store.getEpisodeBySlug('ep-one');
+    assert.equal(ep.slug, 'ep-one');
+    assert.equal(ep.spinitronId, '123');
+    assert.equal(ep.audioLength, 7200);
+    assert.equal(await store.getEpisodeBySlug('missing'), null);
+
+    await store.saveEpisodeTracks('ep-one', {
+      source: 'mixcloud+spinitron',
+      spinitronId: '123',
+      spinitronUrl: 'https://spinitron.com/WOWD/pl/123/My-Tiny-Morning-Show',
+      description: 'Cozy Saturday',
+      tracks: [
+        { artist: 'Miles', song: 'So What', album: 'Kind of Blue', time: '8:00 AM', offsetSeconds: 0, artwork: 'https://art/1.jpg' },
+        { artist: 'Nina', song: 'Feeling Good', album: 'Spell', time: '8:05 AM', offsetSeconds: 300, artwork: null },
+      ],
+    }, 5000);
+
+    await store.saveEpisodeTracks('ep-empty', {
+      source: 'spinitron',
+      spinitronId: null,
+      spinitronUrl: null,
+      description: '',
+      tracks: [],
+    }, 5500);
+
+    const bySpin = await store.getTracklistBySpinitronId('123');
+    assert.equal(bySpin.playlistId, '123');
+    assert.equal(bySpin.spinitronUrl, 'https://spinitron.com/WOWD/pl/123/My-Tiny-Morning-Show');
+    assert.equal(bySpin.description, 'Cozy Saturday');
+    assert.equal(bySpin.tracks.length, 2);
+    assert.equal(bySpin.tracks[0].song, 'So What');
+    assert.equal(await store.getTracklistBySpinitronId('999'), null);
+
+    const states = await store.getTracklistSyncStates();
+    assert.equal(states.size, 2);
+    assert.deepEqual(states.get('ep-one'), {
+      slug: 'ep-one',
+      source: 'mixcloud+spinitron',
+      spinitronId: '123',
+      trackCount: 2,
+      fetchedAt: 5000,
+    });
+    assert.deepEqual(states.get('ep-empty'), {
+      slug: 'ep-empty',
+      source: 'spinitron',
+      spinitronId: null,
+      trackCount: 0,
+      fetchedAt: 5500,
+    });
+  });
+
   it('adds, upserts, lists, and removes favorites', async () => {
     const first = await store.addFavorite({
       episodeSlug: 'ep-one',
