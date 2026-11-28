@@ -1,0 +1,43 @@
+name: Sync Database
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Force full refresh of episodes and tracklists'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: sync-database
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Incremental DB sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Run database sync
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SYNC_FULL: ${{ inputs.full == true && '1' || '0' }}
+        run: |
+          if [ "$SYNC_FULL" = "1" ]; then
+            node scripts/sync.js --require-remote --full
+          else
+            node scripts/sync.js --require-remote
+          fi
