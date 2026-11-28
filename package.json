@@ -6,6 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "sync": "node scripts/sync.js",
     "test": "node --test test/*.test.js",
     "test:e2e": "playwright test"
   },
