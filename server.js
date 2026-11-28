@@ -2,7 +2,6 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getEpisodes, getEpisodeTracks, getTracklist } from './lib/sources.js';
 import { createStore } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -291,14 +290,37 @@ async function serveStatic(res, pathname) {
   }
 }
 
+async function readEpisodeTracksFromStore(store, slug) {
+  const archived = await store.getEpisodeTracks(slug);
+  if (archived) {
+    return {
+      source: archived.source,
+      slug: archived.slug,
+      spinitronId: archived.spinitronId,
+      spinitronUrl: archived.spinitronUrl,
+      description: archived.description,
+      tracks: archived.tracks,
+    };
+  }
+  const ep = await store.getEpisodeBySlug(slug);
+  return {
+    source: 'db',
+    slug,
+    spinitronId: ep?.spinitronId || null,
+    spinitronUrl: ep?.spinitronUrl || null,
+    description: '',
+    tracks: [],
+  };
+}
+
 export function createServer(overrides = {}) {
   const ownsStore = !overrides.store;
   const store = overrides.store ?? createStore();
   const deps = {
     store,
-    getEpisodes: (refresh) => getEpisodes(refresh, store),
-    getEpisodeTracks: (slug, spinitronId) => getEpisodeTracks(slug, spinitronId, store),
-    getTracklist,
+    getEpisodes: () => store.getEpisodes(),
+    getEpisodeTracks: (slug) => readEpisodeTracksFromStore(store, slug),
+    getTracklist: (id) => store.getTracklistBySpinitronId(id),
     metaTimeoutMs: 3000,
     ...overrides,
   };
@@ -313,8 +335,7 @@ export function createServer(overrides = {}) {
       }
 
       if (req.method === 'GET' && pathname === '/api/episodes') {
-        const refresh = url.searchParams.get('refresh') === '1';
-        const episodes = await deps.getEpisodes(refresh);
+        const episodes = await deps.getEpisodes();
         return sendJson(res, 200, { episodes });
       }
 
@@ -328,6 +349,7 @@ export function createServer(overrides = {}) {
       const trackMatch = pathname.match(/^\/api\/tracks\/(\d+)$/);
       if (req.method === 'GET' && trackMatch) {
         const data = await deps.getTracklist(trackMatch[1]);
+        if (!data) return sendJson(res, 404, { error: 'Tracklist not found' });
         return sendJson(res, 200, data);
       }
 

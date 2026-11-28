@@ -88,14 +88,14 @@ describe('server helper functions', () => {
 
 describe('HTTP API and SSR share meta', () => {
   let srv;
-  let lastRefreshArg;
+  let episodesCalls = 0;
   let lastTracksArgs;
   let lastTracklistArg;
 
   before(async () => {
     srv = await startTestServer({
-      getEpisodes: async (refresh) => {
-        lastRefreshArg = refresh;
+      getEpisodes: async () => {
+        episodesCalls++;
         return SAMPLE_EPISODES;
       },
       getEpisodeTracks: async (slug, spinitronId) => {
@@ -119,16 +119,13 @@ describe('HTTP API and SSR share meta', () => {
     assert.deepEqual(await res.json(), { ok: true });
   });
 
-  it('serves /api/episodes and passes refresh flag', async () => {
+  it('serves /api/episodes from the episode provider', async () => {
+    const beforeCalls = episodesCalls;
     const r1 = await fetch(`${srv.baseUrl}/api/episodes`);
     assert.equal(r1.status, 200);
-    assert.equal(lastRefreshArg, false);
     const body1 = await r1.json();
     assert.equal(body1.episodes.length, 1);
-
-    const r2 = await fetch(`${srv.baseUrl}/api/episodes?refresh=1`);
-    assert.equal(r2.status, 200);
-    assert.equal(lastRefreshArg, true);
+    assert.equal(episodesCalls, beforeCalls + 1);
   });
 
   it('serves /api/episodes/:slug/tracks and /api/tracks/:id', async () => {
@@ -390,5 +387,95 @@ describe('Favorites and Lists REST API + SSR list share meta', () => {
 
     const afterDelete = await fetch(`${srv.baseUrl}/api/lists/${list.id}`);
     assert.equal(afterDelete.status, 404);
+  });
+});
+
+describe('DB-only reads without upstream API calls', () => {
+  const originalFetch = globalThis.fetch;
+  let srv;
+  let outboundCalls;
+
+  before(async () => {
+    srv = await startTestServer();
+    await srv.store.saveEpisodes([
+      ...SAMPLE_EPISODES,
+      {
+        mixcloudKey: '/bob-boilen/ep-no-tracks/',
+        mixcloudUrl: 'https://www.mixcloud.com/bob-boilen/ep-no-tracks/',
+        name: 'Unindexed Episode',
+        slug: 'ep-no-tracks',
+        date: '2026-01-03',
+        audioLength: 3600,
+        picture: null,
+        spinitronId: '99999',
+        spinitronUrl: 'https://spinitron.com/WOWD/pl/99999/My-Tiny-Morning-Show',
+      },
+    ], 1);
+    await srv.store.saveEpisodeTracks('ep-one', {
+      ...SAMPLE_TRACKS,
+      spinitronUrl: 'https://spinitron.com/WOWD/pl/12345/My-Tiny-Morning-Show',
+    }, 1);
+
+    outboundCalls = [];
+    globalThis.fetch = async (url, init) => {
+      const s = String(url);
+      if (!s.startsWith(srv.baseUrl)) {
+        outboundCalls.push(s);
+        throw new Error(`Unexpected outbound fetch: ${s}`);
+      }
+      return originalFetch(url, init);
+    };
+  });
+
+  after(async () => {
+    globalThis.fetch = originalFetch;
+    await srv.close();
+  });
+
+  it('serves episodes, tracks, spinitron lookup, and SSR metadata strictly from the DB', async () => {
+    const epRes = await fetch(`${srv.baseUrl}/api/episodes`);
+    assert.equal(epRes.status, 200);
+    const epBody = await epRes.json();
+    assert.equal(epBody.episodes.length, 2);
+    assert.equal(epBody.episodes[0].slug, 'ep-one');
+
+    const refreshRes = await fetch(`${srv.baseUrl}/api/episodes?refresh=1`);
+    assert.equal(refreshRes.status, 200);
+    assert.equal((await refreshRes.json()).episodes.length, 2);
+
+    const tracksRes = await fetch(`${srv.baseUrl}/api/episodes/ep-one/tracks?spinitronId=12345`);
+    assert.equal(tracksRes.status, 200);
+    const tracksBody = await tracksRes.json();
+    assert.equal(tracksBody.source, 'mixcloud+spinitron');
+    assert.equal(tracksBody.tracks.length, 3);
+    assert.equal(tracksBody.fetchedAt, undefined);
+
+    const emptyRes = await fetch(`${srv.baseUrl}/api/episodes/ep-no-tracks/tracks?spinitronId=99999`);
+    assert.equal(emptyRes.status, 200);
+    const emptyBody = await emptyRes.json();
+    assert.deepEqual(emptyBody, {
+      source: 'db',
+      slug: 'ep-no-tracks',
+      spinitronId: '99999',
+      spinitronUrl: 'https://spinitron.com/WOWD/pl/99999/My-Tiny-Morning-Show',
+      description: '',
+      tracks: [],
+    });
+
+    const spinRes = await fetch(`${srv.baseUrl}/api/tracks/12345`);
+    assert.equal(spinRes.status, 200);
+    const spinBody = await spinRes.json();
+    assert.equal(spinBody.playlistId, '12345');
+    assert.equal(spinBody.tracks.length, 3);
+
+    const missingSpinRes = await fetch(`${srv.baseUrl}/api/tracks/77777`);
+    assert.equal(missingSpinRes.status, 404);
+
+    const ssrRes = await fetch(`${srv.baseUrl}/?ep=ep-one&track=2`);
+    assert.equal(ssrRes.status, 200);
+    const ssrHtml = await ssrRes.text();
+    assert.match(ssrHtml, /property="og:title" content="Second &amp; Band — Sun &quot;Rise&quot;"/);
+
+    assert.deepEqual(outboundCalls, []);
   });
 });
