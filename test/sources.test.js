@@ -6,6 +6,9 @@ import {
   parseDateFromText,
   parseTimeToMinutes,
   normalizeMatchKey,
+  fetchMixcloudEpisodes,
+  fetchSpinitronEpisodes,
+  fetchEpisodeTracks,
   getEpisodes,
   getTracklist,
   getMixcloudTracklist,
@@ -419,5 +422,118 @@ describe('sources persistent archive integration', () => {
     const fallback = await getEpisodeTracks('ep-persisted', null, store);
     assert.equal(fallback.tracks.length, 1);
     assert.equal(fallback.tracks[0].song, 'Arc Song');
+  });
+});
+
+describe('incremental upstream fetchers', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearCache();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    clearCache();
+  });
+
+  it('stops Mixcloud pagination once a known slug is encountered', async () => {
+    const requestedUrls = [];
+    globalThis.fetch = async (url) => {
+      const s = String(url);
+      requestedUrls.push(s);
+      if (!s.includes('page=2')) {
+        return jsonResponse({
+          data: [
+            {
+              key: '/bob-boilen/ep-new/',
+              url: 'https://www.mixcloud.com/bob-boilen/ep-new/',
+              name: 'My Tiny Morning Show - Feb 4, 2026',
+              slug: 'ep-new',
+              audio_length: 7200,
+              pictures: { large: 'https://img/new.jpg' },
+              created_time: '2026-02-05T15:00:00Z',
+            },
+            {
+              key: '/bob-boilen/ep-known/',
+              url: 'https://www.mixcloud.com/bob-boilen/ep-known/',
+              name: 'My Tiny Morning Show - Jan 28, 2026',
+              slug: 'ep-known',
+              audio_length: 7200,
+              pictures: { large: 'https://img/known.jpg' },
+              created_time: '2026-01-29T15:00:00Z',
+            },
+          ],
+          paging: { next: 'https://api.mixcloud.com/bob-boilen/cloudcasts/?page=2' },
+        });
+      }
+      throw new Error('Should not fetch page 2 when known slug was seen on page 1');
+    };
+
+    const items = await fetchMixcloudEpisodes({
+      maxPages: 3,
+      knownSlugs: new Set(['ep-known']),
+    });
+    assert.equal(requestedUrls.length, 1);
+    assert.deepEqual(items.map((e) => e.slug), ['ep-new', 'ep-known']);
+  });
+
+  it('stops Spinitron pagination once stopBeforeDate is reached', async () => {
+    const requestedUrls = [];
+    globalThis.fetch = async (url) => {
+      const s = String(url);
+      requestedUrls.push(s);
+      if (!s.includes('page=2')) {
+        return htmlResponse(`
+          <div>
+            <a href="/WOWD/pl/3001/My-Tiny-Morning-Show">Show</a><span>Feb 4, 2026</span>
+            <a href="/WOWD/pl/3000/My-Tiny-Morning-Show">Show</a><span>Jan 28, 2026</span>
+          </div>
+        `);
+      }
+      throw new Error('Should not fetch page 2 once stopBeforeDate is reached');
+    };
+
+    const items = await fetchSpinitronEpisodes({
+      maxPages: 3,
+      stopBeforeDate: '2026-01-28',
+    });
+    assert.equal(requestedUrls.length, 1);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].spinitronId, '3001');
+  });
+
+  it('fetchEpisodeTracks fetches and merges Mixcloud and Spinitron directly', async () => {
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('graphql')) {
+        return jsonResponse({
+          data: {
+            cloudcastLookup: {
+              name: 'Show',
+              description: 'Fresh episode',
+              audioLength: 3600,
+              sections: [
+                { __typename: 'TrackSection', startSeconds: 30, artistName: 'A', songName: 'Song A' },
+              ],
+            },
+          },
+        });
+      }
+      return htmlResponse(`
+        <p>8:00 AM - 10:00 AM</p>
+        <table>
+          <tr class="spin-item" data-spin="{&quot;a&quot;:&quot;A&quot;,&quot;s&quot;:&quot;Song A&quot;,&quot;r&quot;:&quot;Album A&quot;}">
+            <td class="spin-time">8:01 AM</td>
+            <td class="spin-art"><img src="https://art/a.jpg"></td>
+          </tr>
+        </table>
+      `);
+    };
+
+    const merged = await fetchEpisodeTracks('ep-fresh', '55555');
+    assert.equal(merged.source, 'mixcloud+spinitron');
+    assert.equal(merged.spinitronId, '55555');
+    assert.equal(merged.tracks.length, 1);
+    assert.equal(merged.tracks[0].album, 'Album A');
   });
 });
